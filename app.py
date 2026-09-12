@@ -21,6 +21,9 @@ DB_NAME = "sistema_contable_edu.db"
 # 1. BASE DE DATOS Y PERSISTENCIA (SQLITE)
 # ==========================================
 
+def hash_pass(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -44,11 +47,16 @@ def init_db():
         )
     ''')
     
+    # Creación automática de usuario ADMIN maestro si no existe
+    cursor.execute("SELECT username FROM usuarios WHERE username = 'admin'")
+    if not cursor.fetchone():
+        cursor.execute(
+            "INSERT INTO usuarios VALUES (?, ?, ?, ?)",
+            ("admin", hash_pass("admin123"), "Profesor / Administrador", "Docente")
+        )
+    
     conn.commit()
     conn.close()
-
-def hash_pass(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
 
 def registrar_usuario(username, password, nombre_alumno, curso):
     conn = sqlite3.connect(DB_NAME)
@@ -107,7 +115,6 @@ def cargar_estado_db(username):
     conn.close()
     if row and row[0]:
         datos = json.loads(row[0])
-        # Deserializar Fechas ISO a objetos date
         for renglon in datos.get("libro_diario", []):
             if isinstance(renglon.get("Fecha"), str):
                 renglon["Fecha"] = datetime.date.fromisoformat(renglon["Fecha"])
@@ -126,6 +133,9 @@ def cargar_estado_db(username):
     return None
 
 def guardar_estado_db(username):
+    if username == "admin":
+        return # El admin maestro no requiere guardar libro diario personal
+        
     def serializar_fecha(o):
         if isinstance(o, (datetime.date, datetime.datetime)):
             return o.isoformat()
@@ -148,6 +158,30 @@ def guardar_estado_db(username):
     conn.commit()
     conn.close()
 
+# Funciones de Administración de Usuarios
+def obtener_todos_usuarios():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT username, nombre_alumno, curso FROM usuarios WHERE username != 'admin'")
+    usuarios = cursor.fetchall()
+    conn.close()
+    return usuarios
+
+def admin_reset_password(username, nueva_clave):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE usuarios SET password = ? WHERE username = ?", (hash_pass(nueva_clave), username))
+    conn.commit()
+    conn.close()
+
+def eliminar_usuario(username):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM estado_alumno WHERE username = ?", (username,))
+    cursor.execute("DELETE FROM usuarios WHERE username = ?", (username,))
+    conn.commit()
+    conn.close()
+
 # ==========================================
 # 2. CONTROL DE ACCESO Y SESIÓN
 # ==========================================
@@ -162,27 +196,35 @@ if not st.session_state["autenticado"]:
     st.title("📚 Sistema Contable Educativo con Auditoría")
     st.write("Acceso al entorno de práctica contable.")
     
-    # Declaración explícita de pestañas
-    tab_login, tab_registro = st.tabs(["Iniciar Sesión", "Registrarse"])
+    tab_login, tab_registro, tab_recuperar = st.tabs(["Iniciar Sesión", "Registrarse", "Recuperar Contraseña"])
     
     with tab_login:
         user_input = st.text_input("Usuario (DNI / Legajo)", key="l_user")
         pass_input = st.text_input("Contraseña", type="password", key="l_pass")
         if st.button("Ingresar al Taller", type="primary"):
-            if verificar_credenciales(user_input, pass_input):
+            user_clean = user_input.strip()
+            if verificar_credenciales(user_clean, pass_input):
                 st.session_state["autenticado"] = True
-                st.session_state["usuario"] = user_input
+                st.session_state["usuario"] = user_clean
                 
-                # Cargar estado guardado de la BD
-                estado = cargar_estado_db(user_input)
-                if estado:
-                    st.session_state.alumno_nombre = estado.get("alumno_nombre", "Alumno")
-                    st.session_state.alumno_curso = estado.get("alumno_curso", "5° Año")
-                    st.session_state.plan_cuentas = estado.get("plan_cuentas", [])
-                    st.session_state.padron_terceros = estado.get("padron_terceros", [])
-                    st.session_state.padron_articulos = estado.get("padron_articulos", [])
-                    st.session_state.libro_diario = estado.get("libro_diario", [])
-                    st.session_state.submayores = estado.get("submayores", {})
+                if user_clean != "admin":
+                    estado = cargar_estado_db(user_clean)
+                    if estado:
+                        st.session_state.alumno_nombre = estado.get("alumno_nombre", "Alumno")
+                        st.session_state.alumno_curso = estado.get("alumno_curso", "5° Año")
+                        st.session_state.plan_cuentas = estado.get("plan_cuentas", [])
+                        st.session_state.padron_terceros = estado.get("padron_terceros", [])
+                        st.session_state.padron_articulos = estado.get("padron_articulos", [])
+                        st.session_state.libro_diario = estado.get("libro_diario", [])
+                        st.session_state.submayores = estado.get("submayores", {})
+                else:
+                    st.session_state.alumno_nombre = "Profesor / Administrador"
+                    st.session_state.alumno_curso = "Docente Maestro"
+                    st.session_state.plan_cuentas = []
+                    st.session_state.padron_terceros = []
+                    st.session_state.padron_articulos = []
+                    st.session_state.libro_diario = []
+                    st.session_state.submayores = {}
                 st.rerun()
             else:
                 st.error("Credenciales incorrectas.")
@@ -202,13 +244,45 @@ if not st.session_state["autenticado"]:
             nom_clean = r_nom.strip()
             curso_clean = r_curso.strip()
 
-            if usuario_clean and pass_clean and nom_clean:
+            if usuario_clean.lower() == "admin":
+                st.error("El nombre 'admin' está reservado.")
+            elif usuario_clean and pass_clean and nom_clean:
                 if registrar_usuario(usuario_clean, pass_clean, nom_clean, curso_clean):
                     st.success("¡Cuenta creada exitosamente! Ya puedes iniciar sesión en la otra pestaña.")
                 else:
                     st.warning("El nombre de usuario o DNI ya se encuentra registrado.")
             else:
-                st.error("Completa todos los campos obligatorios (Usuario, Contraseña y Nombre).")
+                st.error("Completa todos los campos obligatorios.")
+
+    with tab_recuperar:
+        st.subheader("🔑 Restablecer Contraseña")
+        with st.form("form_recuperar_pass", clear_on_submit=True):
+            rec_user = st.text_input("Usuario / DNI")
+            rec_nombre = st.text_input("Nombre Completo (tal como te registraste)")
+            rec_pass_nueva = st.text_input("Nueva Contraseña", type="password")
+            
+            submit_rec = st.form_submit_button("Cambiar Contraseña")
+
+        if submit_rec:
+            u_clean = rec_user.strip()
+            n_clean = rec_nombre.strip()
+            p_clean = rec_pass_nueva.strip()
+
+            if u_clean and n_clean and p_clean:
+                conn = sqlite3.connect(DB_NAME)
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM usuarios WHERE username = ? AND LOWER(nombre_alumno) = LOWER(?)", (u_clean, n_clean))
+                user_match = cursor.fetchone()
+                
+                if user_match:
+                    cursor.execute("UPDATE usuarios SET password = ? WHERE username = ?", (hash_pass(p_clean), u_clean))
+                    conn.commit()
+                    st.success("¡Contraseña restablecida con éxito! Ya puedes iniciar sesión.")
+                else:
+                    st.error("Los datos ingresados no coinciden.")
+                conn.close()
+            else:
+                st.error("Completa todos los campos.")
 
     st.stop()
 
@@ -225,12 +299,13 @@ st.write("Herramienta pedagógica para registración manual, gestión de padrone
 st.sidebar.header("🎓 Datos del Estudiante")
 st.sidebar.text_input("Usuario Activo", value=usr_act, disabled=True)
 
-st.session_state.alumno_nombre = st.sidebar.text_input("Nombre del Alumno", value=st.session_state.alumno_nombre)
-st.session_state.alumno_curso = st.sidebar.text_input("Curso / Materia", value=st.session_state.alumno_curso)
+st.session_state.alumno_nombre = st.sidebar.text_input("Nombre del Alumno", value=st.session_state.alumno_nombre, disabled=(usr_act=="admin"))
+st.session_state.alumno_curso = st.sidebar.text_input("Curso / Materia", value=st.session_state.alumno_curso, disabled=(usr_act=="admin"))
 
-if st.sidebar.button("💾 Guardar Avance en Nube"):
-    guardar_estado_db(usr_act)
-    st.sidebar.success("¡Avance guardado exitosamente en la base de datos!")
+if usr_act != "admin":
+    if st.sidebar.button("💾 Guardar Avance en Nube"):
+        guardar_estado_db(usr_act)
+        st.sidebar.success("¡Avance guardado exitosamente!")
 
 if st.sidebar.button("Cerrar Sesión"):
     guardar_estado_db(usr_act)
@@ -240,7 +315,7 @@ if st.sidebar.button("Cerrar Sesión"):
 
 st.sidebar.divider()
 
-# FUNCIONES AUXILIARES DE REPORTES EN PDF (REPORTLAB)
+# FUNCIONES AUXILIARES DE REPORTES EN PDF
 def obtener_encabezado_pdf(styles):
     style_header_label = ParagraphStyle('HLabel', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=9, textColor=colors.HexColor('#1E293B'))
     style_header_right = ParagraphStyle('HRight', parent=styles['Normal'], fontName='Helvetica-Oblique', fontSize=8, alignment=2, textColor=colors.HexColor('#64748B'))
@@ -378,21 +453,56 @@ def generar_pdf_tabla_generica(titulo, df, orientacion="portrait"):
     buffer.seek(0)
     return buffer
 
-# MENÚ NAVEGACIÓN
-menu = st.sidebar.radio(
-    "Navegación",
-    [
-        "1. Padrones y Plan de Cuentas",
-        "2. Carga de Asientos (Libro Diario)",
-        "3. Libro Mayor y Submayores",
-        "4. Ficha de Stock PPP",
-        "5. Sumas y Saldos",
-        "6. Auditoría y Prebalance (8 Columnas)"
-    ]
-)
+# OPCIONES DE NAVEGACIÓN DIVERSIFICADAS POR ROL
+opciones_menu = [
+    "1. Padrones y Plan de Cuentas",
+    "2. Carga de Asientos (Libro Diario)",
+    "3. Libro Mayor y Submayores",
+    "4. Ficha de Stock PPP",
+    "5. Sumas y Saldos",
+    "6. Auditoría y Prebalance (8 Columnas)"
+]
+
+if usr_act == "admin":
+    opciones_menu.insert(0, "👨‍🏫 Gestión de Alumnos")
+
+menu = st.sidebar.radio("Navegación", opciones_menu)
+
+# MÓDULO EXCLUSIVO PARA ADMINISTRADOR / PROFESOR
+if menu == "👨‍🏫 Gestión de Alumnos":
+    st.header("👨‍🏫 Panel de Control Docente y Administración de Usuarios")
+    
+    usuarios_list = obtener_todos_usuarios()
+    if usuarios_list:
+        df_u = pd.DataFrame(usuarios_list, columns=["Usuario / DNI", "Nombre Completo del Alumno", "Curso / División"])
+        st.dataframe(df_u, use_container_width=True)
+        
+        st.divider()
+        col_adm1, col_adm2 = st.columns(2)
+        
+        with col_adm1:
+            st.markdown("##### 🔑 Restablecer Contraseña a un Alumno")
+            user_reset = st.selectbox("Seleccionar Alumno", [u[0] for u in usuarios_list], key="sel_reset_adm")
+            pass_nueva = st.text_input("Nueva Contraseña", type="password", key="pass_reset_adm")
+            if st.button("Actualizar Contraseña", type="primary"):
+                if pass_nueva.strip():
+                    admin_reset_password(user_reset, pass_nueva.strip())
+                    st.success(f"Contraseña de '{user_reset}' actualizada con éxito.")
+                else:
+                    st.error("Ingresa una contraseña válida.")
+                    
+        with col_adm2:
+            st.markdown("##### 🗑️ Eliminar Usuario y su Registro")
+            user_del = st.selectbox("Seleccionar Alumno a Eliminar", [u[0] for u in usuarios_list], key="sel_del_adm")
+            if st.button("Eliminar Cuenta Definitivamente"):
+                eliminar_usuario(user_del)
+                st.warning(f"Usuario '{user_del}' y todos sus registros fueron eliminados.")
+                st.rerun()
+    else:
+        st.info("Aún no hay alumnos registrados en la base de datos.")
 
 # MÓDULO 1: PADRONES Y PLAN DE CUENTAS
-if menu == "1. Padrones y Plan de Cuentas":
+elif menu == "1. Padrones y Plan de Cuentas":
     st.header("⚙️ Configuración Inicial: Padrones, Inventario y Cuentas")
     
     tab_padron, tab_articulos, tab_cuentas = st.tabs([
@@ -524,7 +634,7 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
 
     with col_m1:
         st.markdown("##### 1️⃣ Renglones al DEBE")
-        df_debe_init = pd.DataFrame([{"Cuenta": st.session_state.plan_cuentas[0], "Monto": 0.0}])
+        df_debe_init = pd.DataFrame([{"Cuenta": st.session_state.plan_cuentas[0] if st.session_state.plan_cuentas else "1.1.01 Caja", "Monto": 0.0}])
         edited_debe = st.data_editor(
             df_debe_init,
             num_rows="dynamic",
@@ -538,7 +648,7 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
 
     with col_m2:
         st.markdown("##### 2️⃣ Renglones al HABER")
-        df_haber_init = pd.DataFrame([{"Cuenta": st.session_state.plan_cuentas[0], "Monto": 0.0}])
+        df_haber_init = pd.DataFrame([{"Cuenta": st.session_state.plan_cuentas[0] if st.session_state.plan_cuentas else "1.1.01 Caja", "Monto": 0.0}])
         edited_haber = st.data_editor(
             df_haber_init,
             num_rows="dynamic",
@@ -722,7 +832,7 @@ elif menu == "3. Libro Mayor y Submayores":
     ])
 
     with tab_mayor:
-        cuenta_sel = st.selectbox("Seleccionar Cuenta", st.session_state.plan_cuentas)
+        cuenta_sel = st.selectbox("Seleccionar Cuenta", st.session_state.plan_cuentas if st.session_state.plan_cuentas else ["1.1.01 Caja"])
         if st.session_state.libro_diario:
             renglones_flat = []
             for a in st.session_state.libro_diario:
@@ -757,7 +867,7 @@ elif menu == "3. Libro Mayor y Submayores":
                 st.info("Sin movimientos en esta cuenta.")
 
     with tab_sub_c:
-        lista_c = list(set([m["Cliente"] for m in st.session_state.submayores["Clientes"]]))
+        lista_c = list(set([m["Cliente"] for m in st.session_state.submayores.get("Clientes", [])]))
         if lista_c:
             cliente_sel = st.selectbox("Seleccionar Cliente a Visualizar", lista_c)
             movs_cli = [m for m in st.session_state.submayores["Clientes"] if m["Cliente"] == cliente_sel]
@@ -774,7 +884,7 @@ elif menu == "3. Libro Mayor y Submayores":
             st.info("Sin registros en submayor de clientes.")
 
     with tab_sub_p:
-        lista_p = list(set([m["Proveedor"] for m in st.session_state.submayores["Proveedores"]]))
+        lista_p = list(set([m["Proveedor"] for m in st.session_state.submayores.get("Proveedores", [])]))
         if lista_p:
             prov_sel = st.selectbox("Seleccionar Proveedor a Visualizar", lista_p)
             movs_prov = [m for m in st.session_state.submayores["Proveedores"] if m["Proveedor"] == prov_sel]
@@ -791,7 +901,7 @@ elif menu == "3. Libro Mayor y Submayores":
             st.info("Sin registros en submayor de proveedores.")
 
     with tab_sub_stk:
-        if st.session_state.submayores["Stock_Fisico"]:
+        if st.session_state.submayores.get("Stock_Fisico"):
             df_sf = pd.DataFrame(st.session_state.submayores["Stock_Fisico"])
             pdf_sub_stk = generar_pdf_tabla_generica("SUBMAYOR DE STOCK FISICO", df_sf)
             st.download_button("📄 Exportar Stock Físico (PDF)", pdf_sub_stk, "Stock_Fisico.pdf", "application/pdf")
@@ -803,7 +913,7 @@ elif menu == "3. Libro Mayor y Submayores":
 elif menu == "4. Ficha de Stock PPP":
     st.header("📈 Ficha de Stock Valorizada - Método PPP")
 
-    fichas = st.session_state.submayores["Stock_Valorizado"]
+    fichas = st.session_state.submayores.get("Stock_Valorizado", {})
 
     if fichas:
         art_sel = st.selectbox("Seleccionar Artículo", list(fichas.keys()))
