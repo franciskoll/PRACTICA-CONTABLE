@@ -162,6 +162,7 @@ if not st.session_state["autenticado"]:
     st.title("📚 Sistema Contable Educativo con Auditoría")
     st.write("Acceso al entorno de práctica contable.")
     
+    # Declaración explícita de pestañas
     tab_login, tab_registro = st.tabs(["Iniciar Sesión", "Registrarse"])
     
     with tab_login:
@@ -186,7 +187,7 @@ if not st.session_state["autenticado"]:
             else:
                 st.error("Credenciales incorrectas.")
                 
-with tab_registro:
+    with tab_registro:
         with st.form("form_registro_usuario", clear_on_submit=True):
             r_user = st.text_input("Crear Nombre de Usuario / DNI")
             r_pass = st.text_input("Crear Contraseña", type="password")
@@ -208,6 +209,8 @@ with tab_registro:
                     st.warning("El nombre de usuario o DNI ya se encuentra registrado.")
             else:
                 st.error("Completa todos los campos obligatorios (Usuario, Contraseña y Nombre).")
+
+    st.stop()
 
 # ==========================================
 # 3. ENTORNO DE TRABAJO CONTABLE
