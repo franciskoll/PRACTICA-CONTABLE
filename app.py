@@ -186,20 +186,28 @@ if not st.session_state["autenticado"]:
             else:
                 st.error("Credenciales incorrectas.")
                 
-    with tab_registro:
-        r_user = st.text_input("Crear Nombre de Usuario / DNI", key="r_user")
-        r_pass = st.text_input("Crear Contraseña", type="password", key="r_pass")
-        r_nom = st.text_input("Nombre Completo del Alumno", key="r_nom")
-        r_curso = st.text_input("Curso / División", value="5° Año - Contabilidad", key="r_curso")
-        
-        if st.button("Crear Cuenta"):
-            if r_user.strip() and r_pass.strip() and r_nom.strip():
-                if registrar_usuario(r_user.strip(), r_pass, r_nom.strip(), r_curso.strip()):
-                    st.success("Cuenta creada exitosamente. Ya puedes iniciar sesión.")
+with tab_registro:
+        with st.form("form_registro_usuario", clear_on_submit=True):
+            r_user = st.text_input("Crear Nombre de Usuario / DNI")
+            r_pass = st.text_input("Crear Contraseña", type="password")
+            r_nom = st.text_input("Nombre Completo del Alumno")
+            r_curso = st.text_input("Curso / División", value="5° Año - Contabilidad")
+            
+            submit_registro = st.form_submit_button("Crear Cuenta", type="primary")
+
+        if submit_registro:
+            usuario_clean = r_user.strip()
+            pass_clean = r_pass.strip()
+            nom_clean = r_nom.strip()
+            curso_clean = r_curso.strip()
+
+            if usuario_clean and pass_clean and nom_clean:
+                if registrar_usuario(usuario_clean, pass_clean, nom_clean, curso_clean):
+                    st.success("¡Cuenta creada exitosamente! Ya puedes iniciar sesión en la otra pestaña.")
                 else:
-                    st.warning("Ese usuario ya existe.")
+                    st.warning("El nombre de usuario o DNI ya se encuentra registrado.")
             else:
-                st.error("Completa todos los campos obligatorios.")
+                st.error("Completa todos los campos obligatorios (Usuario, Contraseña y Nombre).")
     st.stop()
 
 # ==========================================
