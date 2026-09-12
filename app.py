@@ -208,7 +208,6 @@ with tab_registro:
                     st.warning("El nombre de usuario o DNI ya se encuentra registrado.")
             else:
                 st.error("Completa todos los campos obligatorios (Usuario, Contraseña y Nombre).")
-    st.stop()
 
 # ==========================================
 # 3. ENTORNO DE TRABAJO CONTABLE
