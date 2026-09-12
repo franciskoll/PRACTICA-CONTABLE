@@ -1,114 +1,95 @@
+import streamlit as st
+import pandas as pd
+import json
 import sqlite3
 import hashlib
-import pandas as pd
-import streamlit as st
+import datetime
+import io
+
+# Importaciones para generación de PDF con ReportLab
+from reportlab.lib.pagesizes import letter, landscape
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+# Configuración de la página
+st.set_page_config(page_title="App Educativa de Contabilidad", layout="wide")
+
+DB_NAME = "sistema_contable_edu.db"
 
 # ==========================================
-# 1. BASE DE DATOS Y PERSISTENCIA
+# 1. BASE DE DATOS Y PERSISTENCIA (SQLITE)
 # ==========================================
-
-DB_NAME = "practica_contable_v2.db"
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # Usuarios
+    # Tabla Usuarios
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS usuarios (
             username TEXT PRIMARY KEY,
-            password TEXT NOT NULL
+            password TEXT NOT NULL,
+            nombre_alumno TEXT DEFAULT '',
+            curso TEXT DEFAULT ''
         )
     ''')
     
-    # Plan de Cuentas (por usuario)
+    # Tabla Estado del Sistema (JSON por alumno)
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS plan_cuentas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT,
-            codigo TEXT,
-            nombre_cuenta TEXT,
-            tipo TEXT,
+        CREATE TABLE IF NOT EXISTS estado_alumno (
+            username TEXT PRIMARY KEY,
+            datos_json TEXT,
             FOREIGN KEY (username) REFERENCES usuarios (username)
         )
     ''')
-
-    # Clientes (por usuario)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS clientes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT,
-            razon_social TEXT,
-            cuit TEXT,
-            FOREIGN KEY (username) REFERENCES usuarios (username)
-        )
-    ''')
-
-    # Proveedores (por usuario)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS proveedores (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT,
-            razon_social TEXT,
-            cuit TEXT,
-            FOREIGN KEY (username) REFERENCES usuarios (username)
-        )
-    ''')
-
-    # Libro Diario / Asientos (por usuario)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS asientos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT,
-            fecha TEXT,
-            cuenta_debe TEXT,
-            monto_debe REAL,
-            cuenta_haber TEXT,
-            monto_haber REAL,
-            entidad_asociada TEXT,
-            leyenda TEXT,
-            FOREIGN KEY (username) REFERENCES usuarios (username)
-        )
-    ''')
-
+    
     conn.commit()
     conn.close()
 
 def hash_pass(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
-def cargar_cuentas_base(username):
-    """Carga un plan de cuentas básico inicial para el alumno recién registrado."""
-    cuentas_iniciales = [
-        ("1.1.1.01", "Caja", "Activo"),
-        ("1.1.1.02", "Banco Nación C/C", "Activo"),
-        ("1.1.2.01", "Deudores por Ventas", "Activo"),
-        ("1.1.3.01", "Mercaderías", "Activo"),
-        ("2.1.1.01", "Proveedores", "Pasivo"),
-        ("2.1.2.01", "Obligaciones a Pagar", "Pasivo"),
-        ("3.1.1.01", "Capital Social", "Patrimonio Neto"),
-        ("4.1.1.01", "Ventas de Mercaderías", "Ingresos"),
-        ("5.1.1.01", "Costo de Mercaderías Vendidas", "Gastos"),
-    ]
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    for cod, nom, tipo in cuentas_iniciales:
-        cursor.execute("INSERT INTO plan_cuentas (username, codigo, nombre_cuenta, tipo) VALUES (?, ?, ?, ?)", (username, cod, nom, tipo))
-    conn.commit()
-    conn.close()
-
-def registrar_usuario(username, password):
+def registrar_usuario(username, password, nombre_alumno, curso):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO usuarios VALUES (?, ?)", (username, hash_pass(password)))
+        cursor.execute(
+            "INSERT INTO usuarios VALUES (?, ?, ?, ?)", 
+            (username, hash_pass(password), nombre_alumno, curso)
+        )
+        
+        # Datos iniciales por defecto
+        plan_base = [
+            "1.1.01 Caja", "1.1.02 Banco Nación c/c",
+            "1.2.01 Deudores por Ventas (Clientes)", "1.2.02 Deudores Morosos", "1.2.03 Deudores Incobrables",
+            "1.3.01 Mercaderías (Stock)", "1.4.01 Muebles y Útiles",
+            "1.4.02 Depreciación Acumulada Muebles y Útiles", "2.1.01 Proveedores",
+            "2.1.02 Obligaciones a Pagar", "3.1.01 Capital Social", "4.1.01 Ventas",
+            "4.2.01 Sobrante de Caja", "5.1.01 Costo de Mercaderías Vendidas (CMV)",
+            "5.1.02 Gastos Generales", "5.2.01 Faltante de Caja", "5.2.02 Depreciación Muebles y Útiles"
+        ]
+        
+        datos_iniciales = {
+            "alumno_nombre": nombre_alumno,
+            "alumno_curso": curso,
+            "plan_cuentas": plan_base,
+            "padron_terceros": [],
+            "padron_articulos": [],
+            "libro_diario": [],
+            "submayores": {"Clientes": [], "Proveedores": [], "Stock_Fisico": [], "Stock_Valorizado": {}}
+        }
+        
+        cursor.execute(
+            "INSERT INTO estado_alumno VALUES (?, ?)", 
+            (username, json.dumps(datos_iniciales))
+        )
         conn.commit()
-        conn.close()
-        cargar_cuentas_base(username)
         return True
     except sqlite3.IntegrityError:
-        conn.close()
         return False
+    finally:
+        conn.close()
 
 def verificar_credenciales(username, password):
     conn = sqlite3.connect(DB_NAME)
@@ -118,196 +99,895 @@ def verificar_credenciales(username, password):
     conn.close()
     return user is not None
 
-# Funciones de lectura
-def obtener_datos(tabla, username):
+def cargar_estado_db(username):
     conn = sqlite3.connect(DB_NAME)
-    df = pd.read_sql_query(f"SELECT * FROM {tabla} WHERE username = ?", conn, params=(username,))
+    cursor = conn.cursor()
+    cursor.execute("SELECT datos_json FROM estado_alumno WHERE username = ?", (username,))
+    row = cursor.fetchone()
     conn.close()
-    return df
+    if row and row[0]:
+        datos = json.loads(row[0])
+        # Deserializar Fechas ISO a objetos date
+        for renglon in datos.get("libro_diario", []):
+            if isinstance(renglon.get("Fecha"), str):
+                renglon["Fecha"] = datetime.date.fromisoformat(renglon["Fecha"])
+                
+        for clave, movs in datos.get("submayores", {}).items():
+            if isinstance(movs, list):
+                for m in movs:
+                    if isinstance(m.get("Fecha"), str):
+                        m["Fecha"] = datetime.date.fromisoformat(m["Fecha"])
+            elif isinstance(movs, dict):
+                for art, registros in movs.items():
+                    for r in registros:
+                        if isinstance(r.get("Fecha"), str):
+                            r["Fecha"] = datetime.date.fromisoformat(r["Fecha"])
+        return datos
+    return None
+
+def guardar_estado_db(username):
+    def serializar_fecha(o):
+        if isinstance(o, (datetime.date, datetime.datetime)):
+            return o.isoformat()
+
+    datos_exportar = {
+        "alumno_nombre": st.session_state.alumno_nombre,
+        "alumno_curso": st.session_state.alumno_curso,
+        "plan_cuentas": st.session_state.plan_cuentas,
+        "padron_terceros": st.session_state.padron_terceros,
+        "padron_articulos": st.session_state.padron_articulos,
+        "libro_diario": st.session_state.libro_diario,
+        "submayores": st.session_state.submayores
+    }
+    
+    json_str = json.dumps(datos_exportar, default=serializar_fecha, indent=2)
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE estado_alumno SET datos_json = ? WHERE username = ?", (json_str, username))
+    conn.commit()
+    conn.close()
 
 # ==========================================
-# 2. INTERFAZ DE USUARIO Y SESIÓN
+# 2. CONTROL DE ACCESO Y SESIÓN
 # ==========================================
 
 init_db()
-
-st.set_page_config(page_title="Sistema de Gestión y Práctica Contable", layout="wide")
 
 if "autenticado" not in st.session_state:
     st.session_state["autenticado"] = False
     st.session_state["usuario"] = ""
 
-# --- PANTALLA DE ACCESO ---
 if not st.session_state["autenticado"]:
-    st.title("Sistema de Gestión y Práctica Contable")
+    st.title("📚 Sistema Contable Educativo con Auditoría")
+    st.write("Acceso al entorno de práctica contable.")
     
     tab_login, tab_registro = st.tabs(["Iniciar Sesión", "Registrarse"])
     
     with tab_login:
-        user_input = st.text_input("Usuario (Legajo / Nombre)", key="login_u")
-        pass_input = st.text_input("Contraseña", type="password", key="login_p")
-        if st.button("Ingresar", type="primary"):
+        user_input = st.text_input("Usuario (DNI / Legajo)", key="l_user")
+        pass_input = st.text_input("Contraseña", type="password", key="l_pass")
+        if st.button("Ingresar al Taller", type="primary"):
             if verificar_credenciales(user_input, pass_input):
                 st.session_state["autenticado"] = True
                 st.session_state["usuario"] = user_input
+                
+                # Cargar estado guardado de la BD
+                estado = cargar_estado_db(user_input)
+                if estado:
+                    st.session_state.alumno_nombre = estado.get("alumno_nombre", "Alumno")
+                    st.session_state.alumno_curso = estado.get("alumno_curso", "5° Año")
+                    st.session_state.plan_cuentas = estado.get("plan_cuentas", [])
+                    st.session_state.padron_terceros = estado.get("padron_terceros", [])
+                    st.session_state.padron_articulos = estado.get("padron_articulos", [])
+                    st.session_state.libro_diario = estado.get("libro_diario", [])
+                    st.session_state.submayores = estado.get("submayores", {})
                 st.rerun()
             else:
                 st.error("Credenciales incorrectas.")
                 
     with tab_registro:
-        nuevo_user = st.text_input("Crear Nombre de Usuario (Inmutable)", key="reg_u")
-        nueva_pass = st.text_input("Crear Contraseña", type="password", key="reg_p")
-        if st.button("Registrarme"):
-            if nuevo_user.strip() and nueva_pass.strip():
-                if registrar_usuario(nuevo_user.strip(), nueva_pass):
-                    st.success("Cuenta creada exitosamente. Ya puedes ingresar.")
+        r_user = st.text_input("Crear Nombre de Usuario / DNI", key="r_user")
+        r_pass = st.text_input("Crear Contraseña", type="password", key="r_pass")
+        r_nom = st.text_input("Nombre Completo del Alumno", key="r_nom")
+        r_curso = st.text_input("Curso / División", value="5° Año - Contabilidad", key="r_curso")
+        
+        if st.button("Crear Cuenta"):
+            if r_user.strip() and r_pass.strip() and r_nom.strip():
+                if registrar_usuario(r_user.strip(), r_pass, r_nom.strip(), r_curso.strip()):
+                    st.success("Cuenta creada exitosamente. Ya puedes iniciar sesión.")
                 else:
                     st.warning("Ese usuario ya existe.")
             else:
-                st.error("Completa todos los campos.")
+                st.error("Completa todos los campos obligatorios.")
+    st.stop()
 
-# --- ENTORNO DE TRABAJO CONTABLE ---
-else:
-    usr = st.session_state["usuario"]
+# ==========================================
+# 3. ENTORNO DE TRABAJO CONTABLE
+# ==========================================
 
-    # Barra lateral
-    st.sidebar.title("Perfil de Usuario")
-    st.sidebar.text_input("Alumno Conectado:", value=usr, disabled=True)
-    if st.sidebar.button("Cerrar Sesión"):
-        st.session_state["autenticado"] = False
-        st.session_state["usuario"] = ""
-        st.rerun()
+usr_act = st.session_state["usuario"]
 
-    st.title("Taller de Práctica Contable")
+st.title("📚 Sistema Contable Educativo con Auditoría")
+st.write("Herramienta pedagógica para registración manual, gestión de padrones, valuación de inventarios por PPP y Hoja de Trabajo (8 Columnas).")
+
+# SIDEBAR DE USUARIO Y CONTROL
+st.sidebar.header("🎓 Datos del Estudiante")
+st.sidebar.text_input("Usuario Activo", value=usr_act, disabled=True)
+
+st.session_state.alumno_nombre = st.sidebar.text_input("Nombre del Alumno", value=st.session_state.alumno_nombre)
+st.session_state.alumno_curso = st.sidebar.text_input("Curso / Materia", value=st.session_state.alumno_curso)
+
+if st.sidebar.button("💾 Guardar Avance en Nube"):
+    guardar_estado_db(usr_act)
+    st.sidebar.success("¡Avance guardado exitosamente en la base de datos!")
+
+if st.sidebar.button("Cerrar Sesión"):
+    guardar_estado_db(usr_act)
+    st.session_state["autenticado"] = False
+    st.session_state["usuario"] = ""
+    st.rerun()
+
+st.sidebar.divider()
+
+# FUNCIONES AUXILIARES DE REPORTES EN PDF (REPORTLAB)
+def obtener_encabezado_pdf(styles):
+    style_header_label = ParagraphStyle('HLabel', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=9, textColor=colors.HexColor('#1E293B'))
+    style_header_right = ParagraphStyle('HRight', parent=styles['Normal'], fontName='Helvetica-Oblique', fontSize=8, alignment=2, textColor=colors.HexColor('#64748B'))
+    fecha_emision = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+
+    header_data = [
+        [
+            Paragraph(f"<b>Estudiante:</b> {st.session_state.alumno_nombre}", style_header_label),
+            Paragraph(f"<b>Emisión:</b> {fecha_emision}", style_header_right)
+        ],
+        [
+            Paragraph(f"<b>Curso/Materia:</b> {st.session_state.alumno_curso}", style_header_label),
+            Paragraph("Sistema de Practicantes Contables", style_header_right)
+        ]
+    ]
+
+    table_header = Table(header_data, colWidths=[350, 190])
+    table_header.setStyle(TableStyle([
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+        ('TOPPADDING', (0,0), (-1,-1), 2),
+    ]))
+
+    return [
+        table_header,
+        Spacer(1, 5),
+        HRFlowable(width="100%", thickness=1, color=colors.HexColor('#CBD5E1'), spaceAfter=15)
+    ]
+
+def generar_pdf_libro_diario(asientos):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    styles = getSampleStyleSheet()
     
-    # Navegación por Pestañas de Gestión
-    tab_diario, tab_cuentas, tab_terceros = st.tabs([
-        "📖 Libro Diario y Asientos", 
-        "📊 Plan de Cuentas", 
-        "👥 Clientes y Proveedores"
+    style_title = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=15, alignment=1, spaceAfter=12)
+    style_normal = ParagraphStyle('NormStyle', parent=styles['Normal'], fontName='Helvetica', fontSize=9)
+    style_right = ParagraphStyle('RightStyle', parent=styles['Normal'], fontName='Helvetica', fontSize=9, alignment=2)
+    style_th = ParagraphStyle('THStyle', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=9, alignment=1, textColor=colors.white)
+
+    elements = []
+    elements.extend(obtener_encabezado_pdf(styles))
+    elements.append(Paragraph("LIBRO DIARIO GENERAL", style_title))
+    elements.append(Spacer(1, 10))
+
+    headers = [
+        Paragraph("<b>Fecha / Detalle</b>", style_th),
+        Paragraph("<b>Cuenta / Imputación</b>", style_th),
+        Paragraph("<b>Debe ($)</b>", style_th),
+        Paragraph("<b>Haber ($)</b>", style_th)
+    ]
+    data = [headers]
+
+    for a in asientos:
+        tipo_asiento_tag = f" [{a.get('Tipo_Asiento', 'Normal')}]" if a.get('Tipo_Asiento') == 'Ajuste de Auditoría' else ""
+        data.append([
+            Paragraph(f"<b>Asiento N° {a['Asiento']}</b>{tipo_asiento_tag}<br/>{a['Fecha']}", style_normal),
+            Paragraph(f"<b>Operación:</b> {a['Operación']}", style_normal),
+            "", ""
+        ])
+        for r in a['Renglones']:
+            debe_str = f"${r['Monto']:,.2f}" if r['Tipo'] == "Debe" else ""
+            haber_str = f"${r['Monto']:,.2f}" if r['Tipo'] == "Haber" else ""
+            cuenta_fmt = f"<b>{r['Cuenta']}</b>" if r['Tipo'] == "Debe" else f"&nbsp;&nbsp;&nbsp;&nbsp;a <b>{r['Cuenta']}</b>"
+            
+            data.append([
+                "",
+                Paragraph(cuenta_fmt, style_normal),
+                Paragraph(debe_str, style_right),
+                Paragraph(haber_str, style_right)
+            ])
+            
+        tercero_str = f" | Tercero: {a['Tercero']}" if a['Tercero'] != "N/A" else ""
+        data.append([
+            "",
+            Paragraph(f"<i>Según: {a['Concepto']}{tercero_str}</i>", style_normal),
+            "", ""
+        ])
+
+    table = Table(data, colWidths=[100, 270, 90, 90])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E293B')),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+        ('ALIGN', (0,0), (-1,0), 'CENTER'),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#CBD5E1')),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+        ('TOPPADDING', (0,0), (-1,-1), 4),
+    ]))
+
+    elements.append(table)
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+
+def generar_pdf_tabla_generica(titulo, df, orientacion="portrait"):
+    buffer = io.BytesIO()
+    pagesize = landscape(letter) if orientacion == "landscape" else letter
+    doc = SimpleDocTemplate(buffer, pagesize=pagesize, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    styles = getSampleStyleSheet()
+    
+    style_title = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=14, alignment=1, spaceAfter=12)
+    style_cell = ParagraphStyle('Cell', parent=styles['Normal'], fontName='Helvetica', fontSize=7)
+    style_header = ParagraphStyle('Header', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=8, alignment=1, textColor=colors.white)
+
+    elements = []
+    elements.extend(obtener_encabezado_pdf(styles))
+    elements.append(Paragraph(f"<b>{titulo.upper()}</b>", style_title))
+    elements.append(Spacer(1, 10))
+
+    headers = [Paragraph(f"<b>{col}</b>", style_header) for col in df.columns]
+    table_data = [headers]
+
+    for _, row in df.iterrows():
+        row_data = []
+        for val in row:
+            if isinstance(val, (float, int)):
+                val_str = f"${val:,.2f}" if isinstance(val, float) else str(val)
+            else:
+                val_str = str(val) if pd.notnull(val) else ""
+            row_data.append(Paragraph(val_str, style_cell))
+        table_data.append(row_data)
+
+    table = Table(table_data)
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#0F172A')),
+        ('ALIGN', (0,0), (-1,0), 'CENTER'),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#94A3B8')),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('TOPPADDING', (0,0), (-1,-1), 3),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+    ]))
+
+    elements.append(table)
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+
+# MENÚ NAVEGACIÓN
+menu = st.sidebar.radio(
+    "Navegación",
+    [
+        "1. Padrones y Plan de Cuentas",
+        "2. Carga de Asientos (Libro Diario)",
+        "3. Libro Mayor y Submayores",
+        "4. Ficha de Stock PPP",
+        "5. Sumas y Saldos",
+        "6. Auditoría y Prebalance (8 Columnas)"
+    ]
+)
+
+# MÓDULO 1: PADRONES Y PLAN DE CUENTAS
+if menu == "1. Padrones y Plan de Cuentas":
+    st.header("⚙️ Configuración Inicial: Padrones, Inventario y Cuentas")
+    
+    tab_padron, tab_articulos, tab_cuentas = st.tabs([
+        "👥 Padrón de Clientes / Proveedores", 
+        "📦 Inventario (Artículos)", 
+        "📑 Plan de Cuentas"
     ])
 
-    # ----------------------------------------------------
-    # PESTAÑA 1: LIBRO DIARIO Y REGISTRO DE ASIENTOS
-    # ----------------------------------------------------
-    with tab_diario:
-        df_cuentas = obtener_datos("plan_cuentas", usr)
-        df_cli = obtener_datos("clientes", usr)
-        df_prov = obtener_datos("proveedores", usr)
+    with tab_padron:
+        st.subheader("Alta de Cliente o Proveedor")
+        with st.form("form_tercero", clear_on_submit=True):
+            col_t1, col_t2 = st.columns(2)
+            tipo_tercero = col_t1.selectbox("Tipo de Entidad", ["Cliente", "Proveedor"])
+            nombre = col_t2.text_input("Razón Social / Nombre", placeholder="Ej: Distribuidora Tucumán S.R.L.")
 
-        lista_cuentas = df_cuentas["codigo"] + " - " + df_cuentas["nombre_cuenta"] if not df_cuentas.empty else ["Sin Cuentas"]
-        lista_terceros = ["Ninguno"] + list(df_cli["razon_social"]) + list(df_prov["razon_social"])
+            col_t3, col_t4, col_t5 = st.columns(3)
+            cuit = col_t3.text_input("CUIT / DNI", placeholder="20-30405060-7")
+            domicilio = col_t4.text_input("Domicilio Comercial", placeholder="Ej: Av. San Martín 450")
+            condicion_pago = col_t5.selectbox("Condición Habitual", [
+                "Contado / Efectivo",
+                "Cuenta Corriente 30 días",
+                "Cuenta Corriente 60 días",
+                "Transferencia Bancaria"
+            ])
 
-        st.subheader("Registrar Nuevo Asiento Contable")
+            if st.form_submit_button("Guardar en Padrón"):
+                if not nombre or not cuit:
+                    st.error("El nombre y el CUIT son obligatorios.")
+                else:
+                    st.session_state.padron_terceros.append({
+                        "Tipo": tipo_tercero,
+                        "Nombre": nombre,
+                        "CUIT": cuit,
+                        "Domicilio": domicilio,
+                        "Condicion": condicion_pago
+                    })
+                    guardar_estado_db(usr_act)
+                    st.success(f"{tipo_tercero} '{nombre}' registrado correctamente.")
+
+        st.subheader("📋 Padrón Registrado")
+        if st.session_state.padron_terceros:
+            st.dataframe(pd.DataFrame(st.session_state.padron_terceros), use_container_width=True)
+        else:
+            st.info("Aún no hay clientes o proveedores registrados.")
+
+    with tab_articulos:
+        st.subheader("Alta de Artículo de Inventario")
+        with st.form("form_articulo", clear_on_submit=True):
+            col_a1, col_a2, col_a3 = st.columns([1, 2, 1])
+            cod_art = col_a1.text_input("Código de Artículo", placeholder="Ej: ART-001")
+            nom_art = col_a2.text_input("Descripción / Nombre del Artículo", placeholder="Ej: Resma A4 75g")
+            um_art = col_a3.selectbox("Unidad de Medida", ["Unidades", "Kilos", "Litros", "Metros", "Cajas", "Packs"])
+
+            if st.form_submit_button("Guardar Artículo"):
+                if not nom_art:
+                    st.error("El nombre del artículo es obligatorio.")
+                else:
+                    nombres_existentes = [a["Nombre"] for a in st.session_state.padron_articulos]
+                    if nom_art in nombres_existentes:
+                        st.warning(f"El artículo '{nom_art}' ya se encuentra registrado.")
+                    else:
+                        st.session_state.padron_articulos.append({
+                            "Código": cod_art if cod_art else "S/C",
+                            "Nombre": nom_art,
+                            "Unidad": um_art
+                        })
+                        guardar_estado_db(usr_act)
+                        st.success(f"Artículo '{nom_art}' registrado en el inventario.")
+
+        st.subheader("📋 Catálogo de Artículos Registrados")
+        if st.session_state.padron_articulos:
+            st.dataframe(pd.DataFrame(st.session_state.padron_articulos), use_container_width=True)
+        else:
+            st.info("Aún no hay artículos registrados en el inventario.")
+
+    with tab_cuentas:
+        st.subheader("Agregar Nueva Cuenta Contable")
+        with st.form("form_nueva_cuenta", clear_on_submit=True):
+            col_c1, col_c2 = st.columns([1, 3])
+            codigo = col_c1.text_input("Código de Cuenta", placeholder="Ej: 1.1.03")
+            nombre_cuenta = col_c2.text_input("Nombre de la Cuenta", placeholder="Ej: Valores a Depositar")
+
+            if st.form_submit_button("Agregar Cuenta al Plan"):
+                if not codigo or not nombre_cuenta:
+                    st.error("El código y nombre son obligatorios.")
+                else:
+                    nueva_cuenta_str = f"{codigo} {nombre_cuenta}"
+                    if nueva_cuenta_str not in st.session_state.plan_cuentas:
+                        st.session_state.plan_cuentas.append(nueva_cuenta_str)
+                        st.session_state.plan_cuentas.sort()
+                        guardar_estado_db(usr_act)
+                        st.success(f"Cuenta '{nueva_cuenta_str}' agregada.")
+
+        st.dataframe(pd.DataFrame({"Cuentas Disponibles": st.session_state.plan_cuentas}), use_container_width=True)
+
+# MÓDULO 2: LIBRO DIARIO
+elif menu == "2. Carga de Asientos (Libro Diario)":
+    st.header("📝 Registración de Asientos Contables")
+
+    lista_clientes = [t["Nombre"] for t in st.session_state.padron_terceros if t.get("Tipo") == "Cliente"]
+    lista_proveedores = [t["Nombre"] for t in st.session_state.padron_terceros if t.get("Tipo") == "Proveedor"]
+    lista_articulos = [a["Nombre"] for a in st.session_state.padron_articulos]
+
+    st.subheader("📄 Datos del Comprobante y Operación")
+    col_op1, col_op2, col_op3, col_op4 = st.columns([1.5, 2, 2, 2.5])
+    fecha = col_op1.date_input("Fecha de operación")
+    tipo_asiento = col_op2.selectbox("Naturaleza del Asiento", ["Normal (Operativo)", "Ajuste de Auditoría"])
+    tipo_operacion = col_op3.selectbox("Tipo de Operación", ["Compra", "Venta", "Cobro", "Pago", "Ajuste Contable", "Otra Operación"])
+    concepto = col_op4.text_input("Comprobante / Detalle", placeholder="Ej: Factura A N° 0001-00000123 / Faltante de Caja")
+
+    tercero_operacion = "N/A"
+    if tipo_operacion in ["Venta", "Cobro"]:
+        if lista_clientes:
+            tercero_operacion = st.selectbox("Seleccionar Cliente", ["Sin especificar"] + lista_clientes, key=f"sel_cli_{tipo_operacion}")
+        else:
+            st.warning("⚠️ No hay Clientes registrados en el Padrón (Módulo 1).")
+            tercero_operacion = "Sin especificar"
+    elif tipo_operacion in ["Compra", "Pago"]:
+        if lista_proveedores:
+            tercero_operacion = st.selectbox("Seleccionar Proveedor", ["Sin especificar"] + lista_proveedores, key=f"sel_prov_{tipo_operacion}")
+        else:
+            st.warning("⚠️ No hay Proveedores registrados en el Padrón (Módulo 1).")
+            tercero_operacion = "Sin especificar"
+
+    st.divider()
+    st.subheader("📥 Imputaciones Contables Multi-Cuenta")
+
+    col_m1, col_m2 = st.columns(2)
+
+    with col_m1:
+        st.markdown("##### 1️⃣ Renglones al DEBE")
+        df_debe_init = pd.DataFrame([{"Cuenta": st.session_state.plan_cuentas[0], "Monto": 0.0}])
+        edited_debe = st.data_editor(
+            df_debe_init,
+            num_rows="dynamic",
+            column_config={
+                "Cuenta": st.column_config.SelectboxColumn("Cuenta Contable", options=st.session_state.plan_cuentas, required=True),
+                "Monto": st.column_config.NumberColumn("Monto ($)", min_value=0.0, step=100.0, format="$%.2f", required=True)
+            },
+            key="editor_debe",
+            use_container_width=True
+        )
+
+    with col_m2:
+        st.markdown("##### 2️⃣ Renglones al HABER")
+        df_haber_init = pd.DataFrame([{"Cuenta": st.session_state.plan_cuentas[0], "Monto": 0.0}])
+        edited_haber = st.data_editor(
+            df_haber_init,
+            num_rows="dynamic",
+            column_config={
+                "Cuenta": st.column_config.SelectboxColumn("Cuenta Contable", options=st.session_state.plan_cuentas, required=True),
+                "Monto": st.column_config.NumberColumn("Monto ($)", min_value=0.0, step=100.0, format="$%.2f", required=True)
+            },
+            key="editor_haber",
+            use_container_width=True
+        )
+
+    total_debe = edited_debe["Monto"].sum()
+    total_haber = edited_haber["Monto"].sum()
+
+    col_tot1, col_tot2, col_tot3 = st.columns(3)
+    col_tot1.metric("Total DEBE", f"${total_debe:,.2f}")
+    col_tot2.metric("Total HABER", f"${total_haber:,.2f}")
+    diferencia = total_debe - total_haber
+    col_tot3.metric("Diferencia Partida Doble", f"${diferencia:,.2f}", delta_color="inverse")
+
+    st.divider()
+
+    with st.form("form_confirmacion_asiento"):
+        st.subheader("📦 Control de Inventario (Opcional)")
+        col_st1, col_st2, col_st3, col_st4 = st.columns(4)
+        mov_stock = col_st1.selectbox("Movimiento de Stock", ["Ninguno", "Entrada (Compra)", "Salida (Venta)"])
         
-        col_f1, col_f2, col_f3 = st.columns([1, 2, 1])
-        with col_f1:
-            fecha = st.date_input("Fecha de la Operación")
-        with col_f2:
-            leyenda = st.text_input("Documento Respaldatorio / Leyenda", value="s/Factura A")
-        with col_f3:
-            tercero = st.selectbox("Cliente / Proveedor Asociado", options=lista_terceros)
+        if lista_articulos:
+            art_stock = col_st2.selectbox("Seleccionar Artículo", lista_articulos)
+        else:
+            col_st2.warning("Sin artículos en inventario (Cargar en Módulo 1)")
+            art_stock = None
 
-        c_debe, c_haber = st.columns(2)
+        cant_stock = col_st3.number_input("Cantidad", min_value=0, step=1)
+        pu_stock = col_st4.number_input("Precio Unitario Compra ($)", min_value=0.0, step=10.0, help="Solo para Entradas por Compra")
 
-        with c_debe:
-            st.markdown("#### Debe (Débito)")
-            cuenta_debe = st.selectbox("Seleccionar Cuenta a Debitar", options=lista_cuentas, key="sb_debe")
-            monto_debe = st.number_input("Monto Debe ($)", min_value=0.0, value=0.0, step=100.0)
+        submitted = st.form_submit_button("Registrar Asiento Contable")
 
-        with c_haber:
-            st.markdown("#### Haber (Crédito)")
-            cuenta_haber = st.selectbox("Seleccionar Cuenta a Acreditar", options=lista_cuentas, key="sb_haber")
-            monto_haber = st.number_input("Monto Haber ($)", min_value=0.0, value=0.0, step=100.0)
+        if submitted:
+            filas_debe = edited_debe[edited_debe["Monto"] > 0].to_dict('records')
+            filas_haber = edited_haber[edited_haber["Monto"] > 0].to_dict('records')
 
-        if st.button("Guardar Asiento en Libro Diario", type="primary"):
-            if monto_debe <= 0 or monto_haber <= 0:
-                st.error("Los importes deben ser mayores a cero.")
-            elif cuenta_debe == cuenta_haber:
-                st.warning("La cuenta del Debe y del Haber no pueden ser iguales.")
+            if not filas_debe or not filas_haber:
+                st.error("Error: Debe ingresar al menos un movimiento con monto positivo en el Debe y en el Haber.")
+            elif abs(total_debe - total_haber) > 0.001:
+                st.error(f"Error de Partida Doble: El Total Debe (${total_debe:,.2f}) no coincide con el Total Haber (${total_haber:,.2f}).")
+            elif mov_stock != "Ninguno" and not art_stock:
+                st.error("Error: Debe seleccionar un artículo del inventario para registrar el movimiento de stock.")
             else:
-                conn = sqlite3.connect(DB_NAME)
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO asientos (username, fecha, cuenta_debe, monto_debe, cuenta_haber, monto_haber, entidad_asociada, leyenda)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (usr, str(fecha), cuenta_debe, monto_debe, cuenta_haber, monto_haber, tercero, leyenda))
-                conn.commit()
-                conn.close()
-                st.success("Asiento asentado y persistido correctamente.")
+                num_asiento = len(st.session_state.libro_diario) + 1
+                renglones_asiento = []
+
+                for r in filas_debe:
+                    renglones_asiento.append({"Tipo": "Debe", "Cuenta": r["Cuenta"], "Monto": float(r["Monto"])})
+                for r in filas_haber:
+                    renglones_asiento.append({"Tipo": "Haber", "Cuenta": r["Cuenta"], "Monto": float(r["Monto"])})
+
+                asiento_obj = {
+                    "Asiento": num_asiento,
+                    "Fecha": fecha,
+                    "Tipo_Asiento": tipo_asiento,
+                    "Operación": tipo_operacion,
+                    "Concepto": concepto,
+                    "Tercero": tercero_operacion,
+                    "Renglones": renglones_asiento
+                }
+                
+                st.session_state.libro_diario.append(asiento_obj)
+
+                # Actualización de Submayores
+                if tercero_operacion not in ["N/A", "Sin especificar"]:
+                    for r in renglones_asiento:
+                        if tipo_operacion in ["Venta", "Cobro"] and "Clientes" in r["Cuenta"]:
+                            st.session_state.submayores["Clientes"].append({
+                                "Fecha": fecha, "Cliente": tercero_operacion, "Concepto": concepto,
+                                "Debe (Deuda)": r["Monto"] if r["Tipo"] == "Debe" else 0.0,
+                                "Haber (Pago)": r["Monto"] if r["Tipo"] == "Haber" else 0.0
+                            })
+                        elif tipo_operacion in ["Compra", "Pago"] and "Proveedores" in r["Cuenta"]:
+                            st.session_state.submayores["Proveedores"].append({
+                                "Fecha": fecha, "Proveedor": tercero_operacion, "Concepto": concepto,
+                                "Debe (Pago)": r["Monto"] if r["Tipo"] == "Debe" else 0.0,
+                                "Haber (Deuda)": r["Monto"] if r["Tipo"] == "Haber" else 0.0
+                            })
+
+                # Manejo de Stock PPP
+                if mov_stock != "Ninguno" and art_stock and cant_stock > 0:
+                    historial_sf = [m for m in st.session_state.submayores["Stock_Fisico"] if m["Artículo"] == art_stock]
+                    stock_f_prev = historial_sf[-1]["Stock Final"] if historial_sf else 0
+                    
+                    e_sf = cant_stock if mov_stock == "Entrada (Compra)" else 0
+                    s_sf = cant_stock if mov_stock == "Salida (Venta)" else 0
+                    stock_f_nuevo = stock_f_prev + e_sf - s_sf
+
+                    st.session_state.submayores["Stock_Fisico"].append({
+                        "Fecha": fecha, "Artículo": art_stock, "Movimiento": mov_stock,
+                        "Entrada": e_sf, "Salida": s_sf, "Stock Final": stock_f_nuevo
+                    })
+
+                    fichas = st.session_state.submayores["Stock_Valorizado"]
+                    if art_stock not in fichas:
+                        fichas[art_stock] = []
+
+                    historial_art = fichas[art_stock]
+                    cant_saldo_prev = historial_art[-1]["Saldo Cantidad"] if historial_art else 0
+                    monto_saldo_prev = historial_art[-1]["Saldo Total"] if historial_art else 0.0
+                    ppp_prev = historial_art[-1]["Saldo PPP"] if historial_art else 0.0
+
+                    if mov_stock == "Entrada (Compra)":
+                        e_cant, e_pu = cant_stock, pu_stock
+                        e_total = e_cant * e_pu
+                        s_cant, s_pu, s_total = 0, 0.0, 0.0
+
+                        cant_saldo_n = cant_saldo_prev + e_cant
+                        monto_saldo_n = monto_saldo_prev + e_total
+                        ppp_n = monto_saldo_n / cant_saldo_n if cant_saldo_n > 0 else 0.0
+                    else:
+                        e_cant, e_pu, e_total = 0, 0.0, 0.0
+                        s_cant = cant_stock
+                        s_pu = ppp_prev
+                        s_total = s_cant * s_pu
+
+                        cant_saldo_n = max(0, cant_saldo_prev - s_cant)
+                        monto_saldo_n = max(0.0, monto_saldo_prev - s_total)
+                        ppp_n = ppp_prev if cant_saldo_n > 0 else 0.0
+
+                    historial_art.append({
+                        "Fecha": fecha, "Concepto": concepto,
+                        "E. Cant": e_cant, "E. PU": e_pu, "E. Total": e_total,
+                        "S. Cant": s_cant, "S. PU": s_pu, "S. Total": s_total,
+                        "Saldo Cantidad": cant_saldo_n, "Saldo PPP": ppp_n, "Saldo Total": monto_saldo_n
+                    })
+
+                guardar_estado_db(usr_act)
+                st.success(f"Asiento N° {num_asiento} registrado con éxito.")
                 st.rerun()
 
-        st.divider()
-        st.subheader("Libro Diario General")
-        df_asientos = obtener_datos("asientos", usr)
-        
-        if not df_asientos.empty:
-            st.dataframe(df_asientos[["fecha", "cuenta_debe", "monto_debe", "cuenta_haber", "monto_haber", "entidad_asociada", "leyenda"]], use_container_width=True)
+    col_tit, col_btn = st.columns([3, 1])
+    col_tit.subheader("📖 Libro Diario General")
+    
+    if st.session_state.libro_diario:
+        pdf_diario = generar_pdf_libro_diario(st.session_state.libro_diario)
+        col_btn.download_button(
+            label="📄 Exportar Libro Diario (PDF)",
+            data=pdf_diario,
+            file_name=f"Libro_Diario_{st.session_state.alumno_nombre.replace(' ', '_')}.pdf",
+            mime="application/pdf"
+        )
+
+        for asito in st.session_state.libro_diario:
+            with st.container():
+                badge_ajuste = " 🛠️ *(Ajuste de Auditoría)*" if asito.get("Tipo_Asiento") == "Ajuste de Auditoría" else ""
+                st.markdown(f"**------------------- Asiento N° {asito['Asiento']} ({asito['Fecha']}){badge_ajuste} -------------------**")
+                
+                for renglon in asito["Renglones"]:
+                    if renglon["Tipo"] == "Debe":
+                        col_c, col_d, col_h = st.columns([5, 2, 2])
+                        col_c.write(f"**{renglon['Cuenta']}**")
+                        col_d.write(f"${renglon['Monto']:,.2f}")
+                        col_h.write("")
+
+                for renglon in asito["Renglones"]:
+                    if renglon["Tipo"] == "Haber":
+                        col_c, col_d, col_h = st.columns([5, 2, 2])
+                        col_c.write(f"&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;a **{renglon['Cuenta']}**", unsafe_allow_html=True)
+                        col_d.write("")
+                        col_h.write(f"${renglon['Monto']:,.2f}")
+
+                tercero_str = f" | Tercero: {asito['Tercero']}" if asito['Tercero'] != "N/A" else ""
+                st.caption(f"*Según: {asito['Concepto']}{tercero_str}*")
+                st.divider()
+    else:
+        st.info("Sin asientos registrados.")
+
+# MÓDULO 3: LIBRO MAYOR Y SUBMAYORES
+elif menu == "3. Libro Mayor y Submayores":
+    st.header("📊 Libro Mayor General y Submayores Auxiliares")
+
+    tab_mayor, tab_sub_c, tab_sub_p, tab_sub_stk = st.tabs([
+        "Libro Mayor General", "Submayor Clientes", "Submayor Proveedores", "Stock Físico (Unidades)"
+    ])
+
+    with tab_mayor:
+        cuenta_sel = st.selectbox("Seleccionar Cuenta", st.session_state.plan_cuentas)
+        if st.session_state.libro_diario:
+            renglones_flat = []
+            for a in st.session_state.libro_diario:
+                for r in a["Renglones"]:
+                    if r["Cuenta"] == cuenta_sel:
+                        renglones_flat.append({
+                            "Asiento": a["Asiento"],
+                            "Fecha": a["Fecha"],
+                            "Tipo": a.get("Tipo_Asiento", "Normal (Operativo)"),
+                            "Operación": a["Operación"],
+                            "Concepto": a["Concepto"],
+                            "Tercero": a["Tercero"],
+                            "Debe": r["Monto"] if r["Tipo"] == "Debe" else 0.0,
+                            "Haber": r["Monto"] if r["Tipo"] == "Haber" else 0.0
+                        })
+
+            if renglones_flat:
+                df_cuenta = pd.DataFrame(renglones_flat)
+                t_debe = df_cuenta["Debe"].sum()
+                t_haber = df_cuenta["Haber"].sum()
+                
+                pdf_mayor = generar_pdf_tabla_generica(f"LIBRO MAYOR: {cuenta_sel}", df_cuenta)
+                st.download_button("📄 Exportar Mayor (PDF)", pdf_mayor, f"Mayor_{cuenta_sel}.pdf", "application/pdf")
+                
+                st.dataframe(df_cuenta, use_container_width=True)
+
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Total Debe", f"${t_debe:,.2f}")
+                c2.metric("Total Haber", f"${t_haber:,.2f}")
+                c3.metric("Saldo", f"${t_debe - t_haber:,.2f}")
+            else:
+                st.info("Sin movimientos en esta cuenta.")
+
+    with tab_sub_c:
+        lista_c = list(set([m["Cliente"] for m in st.session_state.submayores["Clientes"]]))
+        if lista_c:
+            cliente_sel = st.selectbox("Seleccionar Cliente a Visualizar", lista_c)
+            movs_cli = [m for m in st.session_state.submayores["Clientes"] if m["Cliente"] == cliente_sel]
+            
+            df_c = pd.DataFrame(movs_cli)
+            df_c["Saldo Acumulado"] = (df_c["Debe (Deuda)"] - df_c["Haber (Pago)"]).cumsum()
+
+            pdf_sub_c = generar_pdf_tabla_generica(f"SUBMAYOR DE CLIENTE: {cliente_sel}", df_c)
+            st.download_button("📄 Exportar Submayor Cliente (PDF)", pdf_sub_c, f"Submayor_Cliente_{cliente_sel}.pdf", "application/pdf")
+
+            st.dataframe(df_c, use_container_width=True)
+            st.metric("Saldo Pendiente del Cliente", f"${df_c['Saldo Acumulado'].iloc[-1]:,.2f}")
         else:
-            st.info("No hay asientos registrados para este usuario.")
+            st.info("Sin registros en submayor de clientes.")
 
-    # ----------------------------------------------------
-    # PESTAÑA 2: PLAN DE CUENTAS
-    # ----------------------------------------------------
-    with tab_cuentas:
-        st.subheader("Plan de Cuentas del Alumno")
-        
-        with st.expander("Alta de Nueva Cuenta Contable"):
-            c1, c2, c3 = st.columns(3)
-            cod_c = c1.text_input("Código (ej: 1.1.1.03)")
-            nom_c = c2.text_input("Nombre de Cuenta (ej: Banco Galicia)")
-            tipo_c = c3.selectbox("Tipo de Cuenta", ["Activo", "Pasivo", "Patrimonio Neto", "Ingresos", "Gastos"])
+    with tab_sub_p:
+        lista_p = list(set([m["Proveedor"] for m in st.session_state.submayores["Proveedores"]]))
+        if lista_p:
+            prov_sel = st.selectbox("Seleccionar Proveedor a Visualizar", lista_p)
+            movs_prov = [m for m in st.session_state.submayores["Proveedores"] if m["Proveedor"] == prov_sel]
             
-            if st.button("Agregar Cuenta"):
-                if cod_c.strip() and nom_c.strip():
-                    conn = sqlite3.connect(DB_NAME)
-                    cursor = conn.cursor()
-                    cursor.execute("INSERT INTO plan_cuentas (username, codigo, nombre_cuenta, tipo) VALUES (?, ?, ?, ?)", (usr, cod_c, nom_c, tipo_c))
-                    conn.commit()
-                    conn.close()
-                    st.success("Cuenta agregada.")
-                    st.rerun()
+            df_p = pd.DataFrame(movs_prov)
+            df_p["Saldo Acumulado"] = (df_p["Haber (Deuda)"] - df_p["Debe (Pago)"]).cumsum()
 
-        df_c = obtener_datos("plan_cuentas", usr)
-        st.dataframe(df_c[["codigo", "nombre_cuenta", "tipo"]], use_container_width=True)
+            pdf_sub_p = generar_pdf_tabla_generica(f"SUBMAYOR DE PROVEEDOR: {prov_sel}", df_p)
+            st.download_button("📄 Exportar Submayor Proveedor (PDF)", pdf_sub_p, f"Submayor_Proveedor_{prov_sel}.pdf", "application/pdf")
 
-    # ----------------------------------------------------
-    # PESTAÑA 3: CLIENTES Y PROVEEDORES
-    # ----------------------------------------------------
-    with tab_terceros:
-        st.subheader("Gestión de Entidades Comerciales")
-        col_cli, col_prov = st.columns(2)
+            st.dataframe(df_p, use_container_width=True)
+            st.metric("Saldo Deuda con Proveedor", f"${df_p['Saldo Acumulado'].iloc[-1]:,.2f}")
+        else:
+            st.info("Sin registros en submayor de proveedores.")
 
-        with col_cli:
-            st.markdown("### Clientes")
-            with st.form("form_cliente"):
-                rs_cli = st.text_input("Razón Social / Nombre")
-                cuit_cli = st.text_input("CUIT / DNI")
-                if st.form_submit_button("Guardar Cliente"):
-                    if rs_cli.strip():
-                        conn = sqlite3.connect(DB_NAME)
-                        cursor = conn.cursor()
-                        cursor.execute("INSERT INTO clientes (username, razon_social, cuit) VALUES (?, ?, ?)", (usr, rs_cli, cuit_cli))
-                        conn.commit()
-                        conn.close()
-                        st.success("Cliente guardado.")
-                        st.rerun()
+    with tab_sub_stk:
+        if st.session_state.submayores["Stock_Fisico"]:
+            df_sf = pd.DataFrame(st.session_state.submayores["Stock_Fisico"])
+            pdf_sub_stk = generar_pdf_tabla_generica("SUBMAYOR DE STOCK FISICO", df_sf)
+            st.download_button("📄 Exportar Stock Físico (PDF)", pdf_sub_stk, "Stock_Fisico.pdf", "application/pdf")
+            st.dataframe(df_sf, use_container_width=True)
+        else:
+            st.info("Sin registros de movimientos físicos de stock.")
+
+# MÓDULO 4: FICHA DE STOCK VALORIZADA (PPP)
+elif menu == "4. Ficha de Stock PPP":
+    st.header("📈 Ficha de Stock Valorizada - Método PPP")
+
+    fichas = st.session_state.submayores["Stock_Valorizado"]
+
+    if fichas:
+        art_sel = st.selectbox("Seleccionar Artículo", list(fichas.keys()))
+        df_art = pd.DataFrame(fichas[art_sel])
+
+        if not df_art.empty:
+            df_display = df_art.copy()
             
-            st.dataframe(obtener_datos("clientes", usr)[["razon_social", "cuit"]], use_container_width=True)
+            columnas_multinivel = pd.MultiIndex.from_tuples([
+                ("Datos Operación", "Fecha"),
+                ("Datos Operación", "Concepto"),
+                ("ENTRADAS", "Cant."),
+                ("ENTRADAS", "P. Unitario"),
+                ("ENTRADAS", "Total"),
+                ("SALIDAS", "Cant."),
+                ("SALIDAS", "P. Unitario"),
+                ("SALIDAS", "Total"),
+                ("EXISTENCIAS", "Cant."),
+                ("EXISTENCIAS", "$ PPP"),
+                ("EXISTENCIAS", "Total Valorizado")
+            ])
+            
+            df_display.columns = columnas_multinivel
 
-        with col_prov:
-            st.markdown("### Proveedores")
-            with st.form("form_proveedor"):
-                rs_pr = st.text_input("Razón Social / Nombre")
-                cuit_pr = st.text_input("CUIT / DNI")
-                if st.form_submit_button("Guardar Proveedor"):
-                    if rs_pr.strip():
-                        conn = sqlite3.connect(DB_NAME)
-                        cursor = conn.cursor()
-                        cursor.execute("INSERT INTO proveedores (username, razon_social, cuit) VALUES (?, ?, ?)", (usr, rs_pr, cuit_pr))
-                        conn.commit()
-                        conn.close()
-                        st.success("Proveedor guardado.")
-                        st.rerun()
-                        
-            st.dataframe(obtener_datos("proveedores", usr)[["razon_social", "cuit"]], use_container_width=True)
+            col_f1, col_f2 = st.columns([3, 1])
+            col_f1.subheader(f"Ficha de Valuación: {art_sel}")
+
+            pdf_ficha = generar_pdf_tabla_generica(f"FICHA DE STOCK PPP: {art_sel}", df_art, orientacion="landscape")
+            col_f2.download_button("📄 Exportar Ficha (PDF)", pdf_ficha, f"Ficha_PPP_{art_sel}.pdf", "application/pdf")
+
+            st.dataframe(
+                df_display.style.format({
+                    ("ENTRADAS", "Cant."): "{:,.0f}",
+                    ("ENTRADAS", "P. Unitario"): "${:,.2f}",
+                    ("ENTRADAS", "Total"): "${:,.2f}",
+                    ("SALIDAS", "Cant."): "{:,.0f}",
+                    ("SALIDAS", "P. Unitario"): "${:,.2f}",
+                    ("SALIDAS", "Total"): "${:,.2f}",
+                    ("EXISTENCIAS", "Cant."): "{:,.0f}",
+                    ("EXISTENCIAS", "$ PPP"): "${:,.2f}",
+                    ("EXISTENCIAS", "Total Valorizado"): "${:,.2f}"
+                }),
+                use_container_width=True
+            )
+
+            ultimo_reg = df_art.iloc[-1]
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Stock Actual", f"{int(ultimo_reg['Saldo Cantidad'])} u.")
+            m2.metric("Precio Promedio Ponderado ($PPP)", f"${ultimo_reg['Saldo PPP']:,.2f}")
+            m3.metric("Valor Total del Inventario", f"${ultimo_reg['Saldo Total']:,.2f}")
+    else:
+        st.info("No hay artículos registrados con valuación de stock PPP.")
+
+# MÓDULO 5: BALANCE DE SUMAS Y SALDOS
+elif menu == "5. Sumas y Saldos":
+    st.header("⚖️ Balance de Comprobación de Sumas y Saldos (Pre-Ajustes)")
+
+    if st.session_state.libro_diario:
+        resumen = []
+
+        for cuenta in st.session_state.plan_cuentas:
+            debe = 0.0
+            haber = 0.0
+            for a in st.session_state.libro_diario:
+                if a.get("Tipo_Asiento", "Normal (Operativo)") != "Ajuste de Auditoría":
+                    for r in a["Renglones"]:
+                        if r["Cuenta"] == cuenta:
+                            if r["Tipo"] == "Debe":
+                                debe += r["Monto"]
+                            else:
+                                haber += r["Monto"]
+
+            if debe > 0 or haber > 0:
+                resumen.append({
+                    "Cuenta": cuenta,
+                    "Sumas Debe": debe,
+                    "Sumas Haber": haber,
+                    "Saldo Deudor": debe - haber if debe > haber else 0.0,
+                    "Saldo Acreedor": haber - debe if haber > debe else 0.0
+                })
+
+        if resumen:
+            df_resumen = pd.DataFrame(resumen)
+
+            col_b1, col_b2 = st.columns([3, 1])
+            col_b1.subheader("Balance General de Comprobación")
+
+            pdf_balance = generar_pdf_tabla_generica("BALANCE DE COMPROBACION DE SUMAS Y SALDOS", df_resumen)
+            col_b2.download_button("📄 Exportar Balance (PDF)", pdf_balance, "Balance_Sumas_y_Saldos.pdf", "application/pdf")
+
+            st.dataframe(df_resumen, use_container_width=True)
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total Debe", f"${df_resumen['Sumas Debe'].sum():,.2f}")
+            c2.metric("Total Haber", f"${df_resumen['Sumas Haber'].sum():,.2f}")
+            c3.metric("Total Deudor", f"${df_resumen['Saldo Deudor'].sum():,.2f}")
+            c4.metric("Total Acreedor", f"${df_resumen['Saldo Acreedor'].sum():,.2f}")
+        else:
+            st.info("Sin registros en operaciones ordinarias.")
+    else:
+        st.info("Sin asientos registrados en el Libro Diario.")
+
+# MÓDULO 6: AUDITORÍA Y HOJA DE TRABAJO (8 COLUMNAS)
+elif menu == "6. Auditoría y Prebalance (8 Columnas)":
+    st.header("🔍 Módulo de Auditoría: Hoja de Trabajo / Balance de 8 Columnas")
+    st.write("Visualización sistemática del proceso de ajuste contable y determinación de Saldos Ajustados.")
+
+    if st.session_state.libro_diario:
+        filas_prebalance = []
+
+        for cuenta in st.session_state.plan_cuentas:
+            s_debe = 0.0
+            s_haber = 0.0
+            a_debe = 0.0
+            a_haber = 0.0
+
+            for asiento in st.session_state.libro_diario:
+                es_ajuste = asiento.get("Tipo_Asiento") == "Ajuste de Auditoría"
+                for renglon in asiento["Renglones"]:
+                    if renglon["Cuenta"] == cuenta:
+                        if not es_ajuste:
+                            if renglon["Tipo"] == "Debe":
+                                s_debe += renglon["Monto"]
+                            else:
+                                s_haber += renglon["Monto"]
+                        else:
+                            if renglon["Tipo"] == "Debe":
+                                a_debe += renglon["Monto"]
+                            else:
+                                a_haber += renglon["Monto"]
+
+            if (s_debe + s_haber + a_debe + a_haber) > 0:
+                saldo_orig = s_debe - s_haber
+                sal_or_deudor = saldo_orig if saldo_orig > 0 else 0.0
+                sal_or_acreedor = abs(saldo_orig) if saldo_orig < 0 else 0.0
+
+                saldo_final = (s_debe + a_debe) - (s_haber + a_haber)
+                sal_aj_deudor = saldo_final if saldo_final > 0 else 0.0
+                sal_aj_acreedor = abs(saldo_final) if saldo_final < 0 else 0.0
+
+                filas_prebalance.append({
+                    "Cuenta": cuenta,
+                    "1. Suma Debe": s_debe,
+                    "2. Suma Haber": s_haber,
+                    "3. Saldo Deudor": sal_or_deudor,
+                    "4. Saldo Acreedor": sal_or_acreedor,
+                    "5. Ajuste Debe": a_debe,
+                    "6. Ajuste Haber": a_haber,
+                    "7. Saldo Ajustado Deudor": sal_aj_deudor,
+                    "8. Saldo Ajustado Acreedor": sal_aj_acreedor
+                })
+
+        if filas_prebalance:
+            df_8col = pd.DataFrame(filas_prebalance)
+
+            col_a1, col_a2 = st.columns([3, 1])
+            col_a1.subheader("📋 Prebalance de 8 Columnas")
+
+            pdf_8col = generar_pdf_tabla_generica("PREBALANCE DE AUDITORIA - 8 COLUMNAS", df_8col, orientacion="landscape")
+            col_a2.download_button("📄 Exportar Hoja 8 Col. (PDF)", pdf_8col, "Hoja_Trabajo_8_Columnas.pdf", "application/pdf")
+
+            st.dataframe(
+                df_8col.style.format({
+                    "1. Suma Debe": "${:,.2f}",
+                    "2. Suma Haber": "${:,.2f}",
+                    "3. Saldo Deudor": "${:,.2f}",
+                    "4. Saldo Acreedor": "${:,.2f}",
+                    "5. Ajuste Debe": "${:,.2f}",
+                    "6. Ajuste Haber": "${:,.2f}",
+                    "7. Saldo Ajustado Deudor": "${:,.2f}",
+                    "8. Saldo Ajustado Acreedor": "${:,.2f}"
+                }),
+                use_container_width=True
+            )
+
+            st.divider()
+            st.subheader("📊 Totales y Verificación de Cuadres")
+
+            tot_s_debe = df_8col["1. Suma Debe"].sum()
+            tot_s_haber = df_8col["2. Suma Haber"].sum()
+            tot_sal_deu = df_8col["3. Saldo Deudor"].sum()
+            tot_sal_acr = df_8col["4. Saldo Acreedor"].sum()
+            tot_aj_debe = df_8col["5. Ajuste Debe"].sum()
+            tot_aj_haber = df_8col["6. Ajuste Haber"].sum()
+            tot_aj_sal_deu = df_8col["7. Saldo Ajustado Deudor"].sum()
+            tot_aj_sal_acr = df_8col["8. Saldo Ajustado Acreedor"].sum()
+
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            mc1.metric("Sumas Originales", f"${tot_s_debe:,.2f}", delta=f"Dif: ${tot_s_debe - tot_s_haber:,.2f}")
+            mc2.metric("Saldos Sin Ajuste", f"${tot_sal_deu:,.2f}", delta=f"Dif: ${tot_sal_deu - tot_sal_acr:,.2f}")
+            mc3.metric("Total Ajustes", f"${tot_aj_debe:,.2f}", delta=f"Dif: ${tot_aj_debe - tot_aj_haber:,.2f}")
+            mc4.metric("Saldos Ajustados", f"${tot_aj_sal_deu:,.2f}", delta=f"Dif: ${tot_aj_sal_deu - tot_aj_sal_acr:,.2f}")
+
+        else:
+            st.info("No hay movimientos contables registrados para generar la Hoja de Trabajo.")
+    else:
+        st.info("Sin asientos registrados en el Libro Diario.")
