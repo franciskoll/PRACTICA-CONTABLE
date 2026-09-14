@@ -167,6 +167,31 @@ def obtener_todos_usuarios():
     conn.close()
     return usuarios
 
+def obtener_datos_usuario(username):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT username, nombre_alumno, curso FROM usuarios WHERE username = ?", (username,))
+    u = cursor.fetchone()
+    conn.close()
+    return u
+
+def admin_actualizar_usuario(old_username, nuevo_nombre, nuevo_curso):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE usuarios SET nombre_alumno = ?, curso = ? WHERE username = ?", (nuevo_nombre, nuevo_curso, old_username))
+    
+    # También actualizamos el JSON de estado para que coincida
+    cursor.execute("SELECT datos_json FROM estado_alumno WHERE username = ?", (old_username,))
+    row = cursor.fetchone()
+    if row and row[0]:
+        datos = json.loads(row[0])
+        datos["alumno_nombre"] = nuevo_nombre
+        datos["alumno_curso"] = nuevo_curso
+        cursor.execute("UPDATE estado_alumno SET datos_json = ? WHERE username = ?", (json.dumps(datos), old_username))
+        
+    conn.commit()
+    conn.close()
+
 def admin_reset_password(username, nueva_clave):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -234,7 +259,7 @@ if not st.session_state["autenticado"]:
             r_user = st.text_input("Crear Nombre de Usuario / DNI")
             r_pass = st.text_input("Crear Contraseña", type="password")
             r_nom = st.text_input("Nombre Completo del Alumno")
-            r_curso = st.text_input("Curso / División", value="5° Año - Contabilidad")
+            r_curso = st.text_input("Curso / Domicilio / División", value="5° Año - Contabilidad")
             
             submit_registro = st.form_submit_button("Crear Cuenta", type="primary")
 
@@ -300,7 +325,7 @@ st.sidebar.header("🎓 Datos del Estudiante")
 st.sidebar.text_input("Usuario Activo", value=usr_act, disabled=True)
 
 st.session_state.alumno_nombre = st.sidebar.text_input("Nombre del Alumno", value=st.session_state.alumno_nombre, disabled=(usr_act=="admin"))
-st.session_state.alumno_curso = st.sidebar.text_input("Curso / Materia", value=st.session_state.alumno_curso, disabled=(usr_act=="admin"))
+st.session_state.alumno_curso = st.sidebar.text_input("Curso / Domicilio", value=st.session_state.alumno_curso, disabled=(usr_act=="admin"))
 
 if usr_act != "admin":
     if st.sidebar.button("💾 Guardar Avance en Nube"):
@@ -327,7 +352,7 @@ def obtener_encabezado_pdf(styles):
             Paragraph(f"<b>Emisión:</b> {fecha_emision}", style_header_right)
         ],
         [
-            Paragraph(f"<b>Curso/Materia:</b> {st.session_state.alumno_curso}", style_header_label),
+            Paragraph(f"<b>Curso/Domicilio:</b> {st.session_state.alumno_curso}", style_header_label),
             Paragraph("Sistema de Practicantes Contables", style_header_right)
         ]
     ]
@@ -474,14 +499,30 @@ if menu == "👨‍🏫 Gestión de Alumnos":
     
     usuarios_list = obtener_todos_usuarios()
     if usuarios_list:
-        df_u = pd.DataFrame(usuarios_list, columns=["Usuario / DNI", "Nombre Completo del Alumno", "Curso / División"])
+        df_u = pd.DataFrame(usuarios_list, columns=["Usuario / DNI", "Nombre Completo del Alumno", "Curso / Domicilio"])
         st.dataframe(df_u, use_container_width=True)
         
         st.divider()
-        col_adm1, col_adm2 = st.columns(2)
+        col_adm1, col_adm2, col_adm3 = st.columns(3)
         
         with col_adm1:
-            st.markdown("##### 🔑 Restablecer Contraseña a un Alumno")
+            st.markdown("##### ✏️ Editar Datos de Usuario")
+            user_edit = st.selectbox("Seleccionar Usuario", [u[0] for u in usuarios_list], key="sel_edit_adm")
+            u_datos = obtener_datos_usuario(user_edit)
+            if u_datos:
+                with st.form("form_edit_user"):
+                    nuevo_nombre = st.text_input("Nombre Completo", value=u_datos[1])
+                    nuevo_curso = st.text_input("Curso / Domicilio", value=u_datos[2])
+                    if st.form_submit_button("Guardar Cambios", type="primary"):
+                        if nuevo_nombre.strip() and nuevo_curso.strip():
+                            admin_actualizar_usuario(user_edit, nuevo_nombre.strip(), nuevo_curso.strip())
+                            st.success(f"Datos del usuario '{user_edit}' actualizados correctamente.")
+                            st.rerun()
+                        else:
+                            st.error("Los campos no pueden estar vacíos.")
+        
+        with col_adm2:
+            st.markdown("##### 🔑 Restablecer Contraseña")
             user_reset = st.selectbox("Seleccionar Alumno", [u[0] for u in usuarios_list], key="sel_reset_adm")
             pass_nueva = st.text_input("Nueva Contraseña", type="password", key="pass_reset_adm")
             if st.button("Actualizar Contraseña", type="primary"):
@@ -491,8 +532,8 @@ if menu == "👨‍🏫 Gestión de Alumnos":
                 else:
                     st.error("Ingresa una contraseña válida.")
                     
-        with col_adm2:
-            st.markdown("##### 🗑️ Eliminar Usuario y su Registro")
+        with col_adm3:
+            st.markdown("##### 🗑️ Eliminar Usuario")
             user_del = st.selectbox("Seleccionar Alumno a Eliminar", [u[0] for u in usuarios_list], key="sel_del_adm")
             if st.button("Eliminar Cuenta Definitivamente"):
                 eliminar_usuario(user_del)
