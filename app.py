@@ -134,7 +134,7 @@ def cargar_estado_db(username):
 
 def guardar_estado_db(username):
     if username == "admin":
-        return # El admin maestro no requiere guardar libro diario personal
+        return
         
     def serializar_fecha(o):
         if isinstance(o, (datetime.date, datetime.datetime)):
@@ -180,7 +180,6 @@ def admin_actualizar_usuario(old_username, nuevo_nombre, nuevo_curso):
     cursor = conn.cursor()
     cursor.execute("UPDATE usuarios SET nombre_alumno = ?, curso = ? WHERE username = ?", (nuevo_nombre, nuevo_curso, old_username))
     
-    # También actualizamos el JSON de estado para que coincida
     cursor.execute("SELECT datos_json FROM estado_alumno WHERE username = ?", (old_username,))
     row = cursor.fetchone()
     if row and row[0]:
@@ -216,6 +215,9 @@ init_db()
 if "autenticado" not in st.session_state:
     st.session_state["autenticado"] = False
     st.session_state["usuario"] = ""
+
+if "asiento_form_id" not in st.session_state:
+    st.session_state["asiento_form_id"] = 0
 
 if not st.session_state["autenticado"]:
     st.title("📚 Sistema Contable Educativo con Auditoría")
@@ -450,7 +452,10 @@ def generar_pdf_tabla_generica(titulo, df, orientacion="portrait"):
     elements.append(Paragraph(f"<b>{titulo.upper()}</b>", style_title))
     elements.append(Spacer(1, 10))
 
-    headers = [Paragraph(f"<b>{col}</b>", style_header) for col in df.columns]
+    if isinstance(df.columns, pd.MultiIndex):
+        headers = [Paragraph(f"<b>{col[1] if col[1] else col[0]}</b>", style_header) for col in df.columns]
+    else:
+        headers = [Paragraph(f"<b>{col}</b>", style_header) for col in df.columns]
     table_data = [headers]
 
     for _, row in df.iterrows():
@@ -586,6 +591,42 @@ elif menu == "1. Padrones y Plan de Cuentas":
         st.subheader("📋 Padrón Registrado")
         if st.session_state.padron_terceros:
             st.dataframe(pd.DataFrame(st.session_state.padron_terceros), use_container_width=True)
+            
+            st.divider()
+            col_ep1, col_ep2 = st.columns(2)
+            
+            with col_ep1:
+                st.markdown("##### ✏️ Editar Entidad del Padrón")
+                nombres_padr = [t["Nombre"] for t in st.session_state.padron_terceros]
+                sel_edit_ter = st.selectbox("Seleccionar Entidad a Editar", nombres_padr, key="sel_edit_padr")
+                idx_ter = nombres_padr.index(sel_edit_ter)
+                ent_act = st.session_state.padron_terceros[idx_ter]
+                
+                with st.form("form_edit_tercero"):
+                    e_tipo = st.selectbox("Tipo", ["Cliente", "Proveedor"], index=0 if ent_act["Tipo"] == "Cliente" else 1)
+                    e_nom = st.text_input("Nombre / Razón Social", value=ent_act["Nombre"])
+                    e_cuit = st.text_input("CUIT / DNI", value=ent_act["CUIT"])
+                    e_dom = st.text_input("Domicilio", value=ent_act["Domicilio"])
+                    e_cond = st.text_input("Condición Habitual", value=ent_act["Condicion"])
+                    
+                    if st.form_submit_button("Guardar Cambios en Padrón"):
+                        st.session_state.padron_terceros[idx_ter] = {
+                            "Tipo": e_tipo, "Nombre": e_nom, "CUIT": e_cuit,
+                            "Domicilio": e_dom, "Condicion": e_cond
+                        }
+                        guardar_estado_db(usr_act)
+                        st.success("Entidad actualizada correctamente.")
+                        st.rerun()
+
+            with col_ep2:
+                st.markdown("##### 🗑️ Eliminar Entidad del Padrón")
+                sel_del_ter = st.selectbox("Seleccionar Entidad a Eliminar", nombres_padr, key="sel_del_padr")
+                if st.button("Eliminar del Padrón"):
+                    idx_d = nombres_padr.index(sel_del_ter)
+                    st.session_state.padron_terceros.pop(idx_d)
+                    guardar_estado_db(usr_act)
+                    st.warning(f"Entidad '{sel_del_ter}' eliminada.")
+                    st.rerun()
         else:
             st.info("Aún no hay clientes o proveedores registrados.")
 
@@ -616,6 +657,39 @@ elif menu == "1. Padrones y Plan de Cuentas":
         st.subheader("📋 Catálogo de Artículos Registrados")
         if st.session_state.padron_articulos:
             st.dataframe(pd.DataFrame(st.session_state.padron_articulos), use_container_width=True)
+            
+            st.divider()
+            col_ea1, col_ea2 = st.columns(2)
+            
+            with col_ea1:
+                st.markdown("##### ✏️ Editar Artículo")
+                nombres_arts = [a["Nombre"] for a in st.session_state.padron_articulos]
+                sel_edit_art = st.selectbox("Seleccionar Artículo a Editar", nombres_arts, key="sel_edit_art")
+                idx_art = nombres_arts.index(sel_edit_art)
+                art_act = st.session_state.padron_articulos[idx_art]
+                
+                with st.form("form_edit_art"):
+                    ea_cod = st.text_input("Código", value=art_act["Código"])
+                    ea_nom = st.text_input("Descripción / Nombre", value=art_act["Nombre"])
+                    ea_um = st.text_input("Unidad de Medida", value=art_act["Unidad"])
+                    
+                    if st.form_submit_button("Guardar Cambios en Artículo"):
+                        st.session_state.padron_articulos[idx_art] = {
+                            "Código": ea_cod, "Nombre": ea_nom, "Unidad": ea_um
+                        }
+                        guardar_estado_db(usr_act)
+                        st.success("Artículo actualizado correctamente.")
+                        st.rerun()
+
+            with col_ea2:
+                st.markdown("##### 🗑️ Eliminar Artículo")
+                sel_del_art = st.selectbox("Seleccionar Artículo a Eliminar", nombres_arts, key="sel_del_art")
+                if st.button("Eliminar del Inventario"):
+                    idx_da = nombres_arts.index(sel_del_art)
+                    st.session_state.padron_articulos.pop(idx_da)
+                    guardar_estado_db(usr_act)
+                    st.warning(f"Artículo '{sel_del_art}' eliminado.")
+                    st.rerun()
         else:
             st.info("Aún no hay artículos registrados en el inventario.")
 
@@ -639,9 +713,38 @@ elif menu == "1. Padrones y Plan de Cuentas":
 
         st.dataframe(pd.DataFrame({"Cuentas Disponibles": st.session_state.plan_cuentas}), use_container_width=True)
 
+        st.divider()
+        col_ec1, col_ec2 = st.columns(2)
+        
+        with col_ec1:
+            st.markdown("##### ✏️ Editar Nombre o Código de Cuenta")
+            sel_edit_cta = st.selectbox("Seleccionar Cuenta a Editar", st.session_state.plan_cuentas, key="sel_edit_cta")
+            idx_cta = st.session_state.plan_cuentas.index(sel_edit_cta)
+            
+            with st.form("form_edit_cuenta"):
+                nueva_cta_val = st.text_input("Nombre / Código Modificado", value=sel_edit_cta)
+                if st.form_submit_button("Guardar Cambios en Cuenta"):
+                    if nueva_cta_val.strip():
+                        st.session_state.plan_cuentas[idx_cta] = nueva_cta_val.strip()
+                        st.session_state.plan_cuentas.sort()
+                        guardar_estado_db(usr_act)
+                        st.success("Plan de cuentas actualizado.")
+                        st.rerun()
+
+        with col_ec2:
+            st.markdown("##### 🗑️ Eliminar Cuenta del Plan")
+            sel_del_cta = st.selectbox("Seleccionar Cuenta a Eliminar", st.session_state.plan_cuentas, key="sel_del_cta")
+            if st.button("Eliminar Cuenta"):
+                st.session_state.plan_cuentas.remove(sel_del_cta)
+                guardar_estado_db(usr_act)
+                st.warning(f"Cuenta '{sel_del_cta}' eliminada.")
+                st.rerun()
+
 # MÓDULO 2: LIBRO DIARIO
 elif menu == "2. Carga de Asientos (Libro Diario)":
     st.header("📝 Registración de Asientos Contables")
+
+    form_suffix = str(st.session_state["asiento_form_id"])
 
     lista_clientes = [t["Nombre"] for t in st.session_state.padron_terceros if t.get("Tipo") == "Cliente"]
     lista_proveedores = [t["Nombre"] for t in st.session_state.padron_terceros if t.get("Tipo") == "Proveedor"]
@@ -649,21 +752,21 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
 
     st.subheader("📄 Datos del Comprobante y Operación")
     col_op1, col_op2, col_op3, col_op4 = st.columns([1.5, 2, 2, 2.5])
-    fecha = col_op1.date_input("Fecha de operación")
-    tipo_asiento = col_op2.selectbox("Naturaleza del Asiento", ["Normal (Operativo)", "Ajuste de Auditoría"])
-    tipo_operacion = col_op3.selectbox("Tipo de Operación", ["Compra", "Venta", "Cobro", "Pago", "Ajuste Contable", "Otra Operación"])
-    concepto = col_op4.text_input("Comprobante / Detalle", placeholder="Ej: Factura A N° 0001-00000123 / Faltante de Caja")
+    fecha = col_op1.date_input("Fecha de operación", key=f"f_fecha_{form_suffix}")
+    tipo_asiento = col_op2.selectbox("Naturaleza del Asiento", ["Normal (Operativo)", "Ajuste de Auditoría"], key=f"f_tipo_as_{form_suffix}")
+    tipo_operacion = col_op3.selectbox("Tipo de Operación", ["Compra", "Venta", "Cobro", "Pago", "Ajuste Contable", "Otra Operación"], key=f"f_tipo_op_{form_suffix}")
+    concepto = col_op4.text_input("Comprobante / Detalle", placeholder="Ej: Factura A N° 0001-00000123 / Faltante de Caja", key=f"f_concepto_{form_suffix}")
 
     tercero_operacion = "N/A"
     if tipo_operacion in ["Venta", "Cobro"]:
         if lista_clientes:
-            tercero_operacion = st.selectbox("Seleccionar Cliente", ["Sin especificar"] + lista_clientes, key=f"sel_cli_{tipo_operacion}")
+            tercero_operacion = st.selectbox("Seleccionar Cliente", ["Sin especificar"] + lista_clientes, key=f"sel_cli_{tipo_operacion}_{form_suffix}")
         else:
             st.warning("⚠️ No hay Clientes registrados en el Padrón (Módulo 1).")
             tercero_operacion = "Sin especificar"
     elif tipo_operacion in ["Compra", "Pago"]:
         if lista_proveedores:
-            tercero_operacion = st.selectbox("Seleccionar Proveedor", ["Sin especificar"] + lista_proveedores, key=f"sel_prov_{tipo_operacion}")
+            tercero_operacion = st.selectbox("Seleccionar Proveedor", ["Sin especificar"] + lista_proveedores, key=f"sel_prov_{tipo_operacion}_{form_suffix}")
         else:
             st.warning("⚠️ No hay Proveedores registrados en el Padrón (Módulo 1).")
             tercero_operacion = "Sin especificar"
@@ -683,7 +786,7 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                 "Cuenta": st.column_config.SelectboxColumn("Cuenta Contable", options=st.session_state.plan_cuentas, required=True),
                 "Monto": st.column_config.NumberColumn("Monto ($)", min_value=0.0, step=100.0, format="$%.2f", required=True)
             },
-            key="editor_debe",
+            key=f"editor_debe_{form_suffix}",
             use_container_width=True
         )
 
@@ -697,7 +800,7 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                 "Cuenta": st.column_config.SelectboxColumn("Cuenta Contable", options=st.session_state.plan_cuentas, required=True),
                 "Monto": st.column_config.NumberColumn("Monto ($)", min_value=0.0, step=100.0, format="$%.2f", required=True)
             },
-            key="editor_haber",
+            key=f"editor_haber_{form_suffix}",
             use_container_width=True
         )
 
@@ -712,7 +815,7 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
 
     st.divider()
 
-    with st.form("form_confirmacion_asiento"):
+    with st.form(f"form_confirmacion_asiento_{form_suffix}"):
         st.subheader("📦 Control de Inventario (Opcional)")
         col_st1, col_st2, col_st3, col_st4 = st.columns(4)
         mov_stock = col_st1.selectbox("Movimiento de Stock", ["Ninguno", "Entrada (Compra)", "Salida (Venta)"])
@@ -824,6 +927,7 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                     })
 
                 guardar_estado_db(usr_act)
+                st.session_state["asiento_form_id"] += 1
                 st.success(f"Asiento N° {num_asiento} registrado con éxito.")
                 st.rerun()
 
@@ -903,7 +1007,7 @@ elif menu == "3. Libro Mayor y Submayores":
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Total Debe", f"${t_debe:,.2f}")
                 c2.metric("Total Haber", f"${t_haber:,.2f}")
-                c3.metric("Saldo", f"${t_debe - t_haber:,.2f}")
+                c3.metric("Saldo Final", f"${t_debe - t_haber:,.2f}")
             else:
                 st.info("Sin movimientos en esta cuenta.")
 
@@ -916,11 +1020,19 @@ elif menu == "3. Libro Mayor y Submayores":
             df_c = pd.DataFrame(movs_cli)
             df_c["Saldo Acumulado"] = (df_c["Debe (Deuda)"] - df_c["Haber (Pago)"]).cumsum()
 
+            tot_c_debe = df_c["Debe (Deuda)"].sum()
+            tot_c_haber = df_c["Haber (Pago)"].sum()
+            saldo_c_final = df_c["Saldo Acumulado"].iloc[-1]
+
             pdf_sub_c = generar_pdf_tabla_generica(f"SUBMAYOR DE CLIENTE: {cliente_sel}", df_c)
             st.download_button("📄 Exportar Submayor Cliente (PDF)", pdf_sub_c, f"Submayor_Cliente_{cliente_sel}.pdf", "application/pdf")
 
             st.dataframe(df_c, use_container_width=True)
-            st.metric("Saldo Pendiente del Cliente", f"${df_c['Saldo Acumulado'].iloc[-1]:,.2f}")
+
+            mc1, mc2, mc3 = st.columns(3)
+            mc1.metric("Total Debe (Deuda Original)", f"${tot_c_debe:,.2f}")
+            mc2.metric("Total Haber (Pagos Recibidos)", f"${tot_c_haber:,.2f}")
+            mc3.metric("Saldo Pendiente del Cliente", f"${saldo_c_final:,.2f}")
         else:
             st.info("Sin registros en submayor de clientes.")
 
@@ -933,20 +1045,38 @@ elif menu == "3. Libro Mayor y Submayores":
             df_p = pd.DataFrame(movs_prov)
             df_p["Saldo Acumulado"] = (df_p["Haber (Deuda)"] - df_p["Debe (Pago)"]).cumsum()
 
+            tot_p_debe = df_p["Debe (Pago)"].sum()
+            tot_p_haber = df_p["Haber (Deuda)"].sum()
+            saldo_p_final = df_p["Saldo Acumulado"].iloc[-1]
+
             pdf_sub_p = generar_pdf_tabla_generica(f"SUBMAYOR DE PROVEEDOR: {prov_sel}", df_p)
             st.download_button("📄 Exportar Submayor Proveedor (PDF)", pdf_sub_p, f"Submayor_Proveedor_{prov_sel}.pdf", "application/pdf")
 
             st.dataframe(df_p, use_container_width=True)
-            st.metric("Saldo Deuda con Proveedor", f"${df_p['Saldo Acumulado'].iloc[-1]:,.2f}")
+
+            mp1, mp2, mp3 = st.columns(3)
+            mp1.metric("Total Debe (Pagos Emitidos)", f"${tot_p_debe:,.2f}")
+            mp2.metric("Total Haber (Deuda Contraída)", f"${tot_p_haber:,.2f}")
+            mp3.metric("Saldo Deuda con Proveedor", f"${saldo_p_final:,.2f}")
         else:
             st.info("Sin registros en submayor de proveedores.")
 
     with tab_sub_stk:
         if st.session_state.submayores.get("Stock_Fisico"):
             df_sf = pd.DataFrame(st.session_state.submayores["Stock_Fisico"])
+            
+            tot_e_sf = df_sf["Entrada"].sum()
+            tot_s_sf = df_sf["Salida"].sum()
+            
             pdf_sub_stk = generar_pdf_tabla_generica("SUBMAYOR DE STOCK FISICO", df_sf)
             st.download_button("📄 Exportar Stock Físico (PDF)", pdf_sub_stk, "Stock_Fisico.pdf", "application/pdf")
+            
             st.dataframe(df_sf, use_container_width=True)
+            
+            ms1, ms2, ms3 = st.columns(3)
+            ms1.metric("Total Unidades Entrada", f"{tot_e_sf:,} u.")
+            ms2.metric("Total Unidades Salida", f"{tot_s_sf:,} u.")
+            ms3.metric("Existencia Física Final", f"{df_sf['Stock Final'].iloc[-1]:,} u.")
         else:
             st.info("Sin registros de movimientos físicos de stock.")
 
@@ -1000,11 +1130,25 @@ elif menu == "4. Ficha de Stock PPP":
                 use_container_width=True
             )
 
+            tot_e_cant = df_art["E. Cant"].sum()
+            tot_e_monto = df_art["E. Total"].sum()
+            tot_s_cant = df_art["S. Cant"].sum()
+            tot_s_monto = df_art["S. Total"].sum()
             ultimo_reg = df_art.iloc[-1]
+
+            st.divider()
+            st.markdown("##### 📊 Resumen General de Totales del Artículo")
+            
+            fcol1, fcol2, fcol3, fcol4 = st.columns(4)
+            fcol1.metric("Total Unidades Compradas", f"{tot_e_cant:,} u.")
+            fcol2.metric("Total Inversión Compras", f"${tot_e_monto:,.2f}")
+            fcol3.metric("Total Unidades Vendidas", f"{tot_s_cant:,} u.")
+            fcol4.metric("Costo Total Mercadería Vendida (CMV)", f"${tot_s_monto:,.2f}")
+
             m1, m2, m3 = st.columns(3)
-            m1.metric("Stock Actual", f"{int(ultimo_reg['Saldo Cantidad'])} u.")
+            m1.metric("Stock Actual Disponible", f"{int(ultimo_reg['Saldo Cantidad'])} u.")
             m2.metric("Precio Promedio Ponderado ($PPP)", f"${ultimo_reg['Saldo PPP']:,.2f}")
-            m3.metric("Valor Total del Inventario", f"${ultimo_reg['Saldo Total']:,.2f}")
+            m3.metric("Valor Total Inventario Final", f"${ultimo_reg['Saldo Total']:,.2f}")
     else:
         st.info("No hay artículos registrados con valuación de stock PPP.")
 
@@ -1039,19 +1183,44 @@ elif menu == "5. Sumas y Saldos":
         if resumen:
             df_resumen = pd.DataFrame(resumen)
 
+            # Agregar Fila de Totales Generales
+            tot_s_debe = df_resumen["Sumas Debe"].sum()
+            tot_s_haber = df_resumen["Sumas Haber"].sum()
+            tot_sal_deu = df_resumen["Saldo Deudor"].sum()
+            tot_sal_acr = df_resumen["Saldo Acreedor"].sum()
+
+            df_resumen_tot = pd.concat([
+                df_resumen,
+                pd.DataFrame([{
+                    "Cuenta": "TOTALES GENERALES",
+                    "Sumas Debe": tot_s_debe,
+                    "Sumas Haber": tot_s_haber,
+                    "Saldo Deudor": tot_sal_deu,
+                    "Saldo Acreedor": tot_sal_acr
+                }])
+            ], ignore_index=True)
+
             col_b1, col_b2 = st.columns([3, 1])
             col_b1.subheader("Balance General de Comprobación")
 
-            pdf_balance = generar_pdf_tabla_generica("BALANCE DE COMPROBACION DE SUMAS Y SALDOS", df_resumen)
+            pdf_balance = generar_pdf_tabla_generica("BALANCE DE COMPROBACION DE SUMAS Y SALDOS", df_resumen_tot)
             col_b2.download_button("📄 Exportar Balance (PDF)", pdf_balance, "Balance_Sumas_y_Saldos.pdf", "application/pdf")
 
-            st.dataframe(df_resumen, use_container_width=True)
+            st.dataframe(
+                df_resumen_tot.style.format({
+                    "Sumas Debe": "${:,.2f}",
+                    "Sumas Haber": "${:,.2f}",
+                    "Saldo Deudor": "${:,.2f}",
+                    "Saldo Acreedor": "${:,.2f}"
+                }),
+                use_container_width=True
+            )
 
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total Debe", f"${df_resumen['Sumas Debe'].sum():,.2f}")
-            c2.metric("Total Haber", f"${df_resumen['Sumas Haber'].sum():,.2f}")
-            c3.metric("Total Deudor", f"${df_resumen['Saldo Deudor'].sum():,.2f}")
-            c4.metric("Total Acreedor", f"${df_resumen['Saldo Acreedor'].sum():,.2f}")
+            c1.metric("Total Debe", f"${tot_s_debe:,.2f}")
+            c2.metric("Total Haber", f"${tot_s_haber:,.2f}")
+            c3.metric("Total Deudor", f"${tot_sal_deu:,.2f}")
+            c4.metric("Total Acreedor", f"${tot_sal_acr:,.2f}")
         else:
             st.info("Sin registros en operaciones ordinarias.")
     else:
@@ -1110,14 +1279,38 @@ elif menu == "6. Auditoría y Prebalance (8 Columnas)":
         if filas_prebalance:
             df_8col = pd.DataFrame(filas_prebalance)
 
+            tot_s_debe = df_8col["1. Suma Debe"].sum()
+            tot_s_haber = df_8col["2. Suma Haber"].sum()
+            tot_sal_deu = df_8col["3. Saldo Deudor"].sum()
+            tot_sal_acr = df_8col["4. Saldo Acreedor"].sum()
+            tot_aj_debe = df_8col["5. Ajuste Debe"].sum()
+            tot_aj_haber = df_8col["6. Ajuste Haber"].sum()
+            tot_aj_sal_deu = df_8col["7. Saldo Ajustado Deudor"].sum()
+            tot_aj_sal_acr = df_8col["8. Saldo Ajustado Acreedor"].sum()
+
+            df_8col_tot = pd.concat([
+                df_8col,
+                pd.DataFrame([{
+                    "Cuenta": "TOTALES GENERALES",
+                    "1. Suma Debe": tot_s_debe,
+                    "2. Suma Haber": tot_s_haber,
+                    "3. Saldo Deudor": tot_sal_deu,
+                    "4. Saldo Acreedor": tot_sal_acr,
+                    "5. Ajuste Debe": tot_aj_debe,
+                    "6. Ajuste Haber": tot_aj_haber,
+                    "7. Saldo Ajustado Deudor": tot_aj_sal_deu,
+                    "8. Saldo Ajustado Acreedor": tot_aj_sal_acr
+                }])
+            ], ignore_index=True)
+
             col_a1, col_a2 = st.columns([3, 1])
             col_a1.subheader("📋 Prebalance de 8 Columnas")
 
-            pdf_8col = generar_pdf_tabla_generica("PREBALANCE DE AUDITORIA - 8 COLUMNAS", df_8col, orientacion="landscape")
+            pdf_8col = generar_pdf_tabla_generica("PREBALANCE DE AUDITORIA - 8 COLUMNAS", df_8col_tot, orientacion="landscape")
             col_a2.download_button("📄 Exportar Hoja 8 Col. (PDF)", pdf_8col, "Hoja_Trabajo_8_Columnas.pdf", "application/pdf")
 
             st.dataframe(
-                df_8col.style.format({
+                df_8col_tot.style.format({
                     "1. Suma Debe": "${:,.2f}",
                     "2. Suma Haber": "${:,.2f}",
                     "3. Saldo Deudor": "${:,.2f}",
@@ -1132,15 +1325,6 @@ elif menu == "6. Auditoría y Prebalance (8 Columnas)":
 
             st.divider()
             st.subheader("📊 Totales y Verificación de Cuadres")
-
-            tot_s_debe = df_8col["1. Suma Debe"].sum()
-            tot_s_haber = df_8col["2. Suma Haber"].sum()
-            tot_sal_deu = df_8col["3. Saldo Deudor"].sum()
-            tot_sal_acr = df_8col["4. Saldo Acreedor"].sum()
-            tot_aj_debe = df_8col["5. Ajuste Debe"].sum()
-            tot_aj_haber = df_8col["6. Ajuste Haber"].sum()
-            tot_aj_sal_deu = df_8col["7. Saldo Ajustado Deudor"].sum()
-            tot_aj_sal_acr = df_8col["8. Saldo Ajustado Acreedor"].sum()
 
             mc1, mc2, mc3, mc4 = st.columns(4)
             mc1.metric("Sumas Originales", f"${tot_s_debe:,.2f}", delta=f"Dif: ${tot_s_debe - tot_s_haber:,.2f}")
