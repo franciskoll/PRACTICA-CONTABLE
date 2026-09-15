@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
 import json
-import sqlite3
 import hashlib
 import datetime
 import io
+from supabase import create_client, Client
 
 # Importaciones para generación de PDF con ReportLab
 from reportlab.lib.pagesizes import letter, landscape
@@ -15,57 +15,57 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 # Configuración de la página
 st.set_page_config(page_title="App Educativa de Contabilidad", layout="wide")
 
-DB_NAME = "sistema_contable_edu.db"
+# ==========================================
+# 0. CONEXIÓN A SUPABASE
+# ==========================================
+
+@st.cache_resource
+def init_supabase() -> Client:
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
+
+supabase = init_supabase()
 
 # ==========================================
-# 1. BASE DE DATOS Y PERSISTENCIA (SQLITE)
+# 1. BASE DE DATOS Y PERSISTENCIA (SUPABASE)
 # ==========================================
 
 def hash_pass(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    
-    # Tabla Usuarios
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS usuarios (
-            username TEXT PRIMARY KEY,
-            password TEXT NOT NULL,
-            nombre_alumno TEXT DEFAULT '',
-            curso TEXT DEFAULT ''
-        )
-    ''')
-    
-    # Tabla Estado del Sistema (JSON por alumno)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS estado_alumno (
-            username TEXT PRIMARY KEY,
-            datos_json TEXT,
-            FOREIGN KEY (username) REFERENCES usuarios (username)
-        )
-    ''')
-    
     # Creación automática de usuario ADMIN maestro si no existe
-    cursor.execute("SELECT username FROM usuarios WHERE username = 'admin'")
-    if not cursor.fetchone():
-        cursor.execute(
-            "INSERT INTO usuarios VALUES (?, ?, ?, ?)",
-            ("admin", hash_pass("admin123"), "Profesor / Administrador", "Docente")
-        )
-    
-    conn.commit()
-    conn.close()
+    res = supabase.table("usuarios").select("username").eq("username", "admin").execute()
+    if not res.data:
+        supabase.table("usuarios").insert({
+            "username": "admin",
+            "password": hash_pass("admin123"),
+            "nombre_alumno": "Profesor / Administrador",
+            "curso": "Docente"
+        }).execute()
+
+def registrar_log(username, accion, detalle=""):
+    try:
+        fecha_actual = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        supabase.table("logs_actividad").insert({
+            "username": username,
+            "fecha_hora": fecha_actual,
+            "accion": accion,
+            "detalle": detalle
+        }).execute()
+    except Exception as e:
+        print(f"Error registrando log: {e}")
 
 def registrar_usuario(username, password, nombre_alumno, curso):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO usuarios VALUES (?, ?, ?, ?)", 
-            (username, hash_pass(password), nombre_alumno, curso)
-        )
+        # Insertar usuario
+        supabase.table("usuarios").insert({
+            "username": username,
+            "password": hash_pass(password),
+            "nombre_alumno": nombre_alumno,
+            "curso": curso
+        }).execute()
         
         # Datos iniciales por defecto
         plan_base = [
@@ -88,33 +88,25 @@ def registrar_usuario(username, password, nombre_alumno, curso):
             "submayores": {"Clientes": [], "Proveedores": [], "Stock_Fisico": [], "Stock_Valorizado": {}}
         }
         
-        cursor.execute(
-            "INSERT INTO estado_alumno VALUES (?, ?)", 
-            (username, json.dumps(datos_iniciales))
-        )
-        conn.commit()
+        # Insertar estado inicial
+        supabase.table("estado_alumno").insert({
+            "username": username,
+            "datos_json": json.dumps(datos_iniciales)
+        }).execute()
+
+        registrar_log(username, "REGISTRO_CUENTA", f"Nuevo registro de usuario: {nombre_alumno}")
         return True
-    except sqlite3.IntegrityError:
+    except Exception as e:
         return False
-    finally:
-        conn.close()
 
 def verificar_credenciales(username, password):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM usuarios WHERE username = ? AND password = ?", (username, hash_pass(password)))
-    user = cursor.fetchone()
-    conn.close()
-    return user is not None
+    res = supabase.table("usuarios").select("*").eq("username", username).eq("password", hash_pass(password)).execute()
+    return len(res.data) > 0
 
 def cargar_estado_db(username):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT datos_json FROM estado_alumno WHERE username = ?", (username,))
-    row = cursor.fetchone()
-    conn.close()
-    if row and row[0]:
-        datos = json.loads(row[0])
+    res = supabase.table("estado_alumno").select("datos_json").eq("username", username).execute()
+    if res.data and res.data[0].get("datos_json"):
+        datos = json.loads(res.data[0]["datos_json"])
         for renglon in datos.get("libro_diario", []):
             if isinstance(renglon.get("Fecha"), str):
                 renglon["Fecha"] = datetime.date.fromisoformat(renglon["Fecha"])
@@ -151,60 +143,48 @@ def guardar_estado_db(username):
     }
     
     json_str = json.dumps(datos_exportar, default=serializar_fecha, indent=2)
-    
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE estado_alumno SET datos_json = ? WHERE username = ?", (json_str, username))
-    conn.commit()
-    conn.close()
+    supabase.table("estado_alumno").update({"datos_json": json_str}).eq("username", username).execute()
 
 # Funciones de Administración de Usuarios
 def obtener_todos_usuarios():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT username, nombre_alumno, curso FROM usuarios WHERE username != 'admin'")
-    usuarios = cursor.fetchall()
-    conn.close()
-    return usuarios
+    res = supabase.table("usuarios").select("username, nombre_alumno, curso").neq("username", "admin").execute()
+    return [(u["username"], u["nombre_alumno"], u["curso"]) for u in res.data]
 
 def obtener_datos_usuario(username):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT username, nombre_alumno, curso FROM usuarios WHERE username = ?", (username,))
-    u = cursor.fetchone()
-    conn.close()
-    return u
+    res = supabase.table("usuarios").select("username, nombre_alumno, curso").eq("username", username).execute()
+    if res.data:
+        u = res.data[0]
+        return (u["username"], u["nombre_alumno"], u["curso"])
+    return None
 
 def admin_actualizar_usuario(old_username, nuevo_nombre, nuevo_curso):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE usuarios SET nombre_alumno = ?, curso = ? WHERE username = ?", (nuevo_nombre, nuevo_curso, old_username))
+    supabase.table("usuarios").update({
+        "nombre_alumno": nuevo_nombre,
+        "curso": nuevo_curso
+    }).eq("username", old_username).execute()
     
-    cursor.execute("SELECT datos_json FROM estado_alumno WHERE username = ?", (old_username,))
-    row = cursor.fetchone()
-    if row and row[0]:
-        datos = json.loads(row[0])
+    res = supabase.table("estado_alumno").select("datos_json").eq("username", old_username).execute()
+    if res.data and res.data[0].get("datos_json"):
+        datos = json.loads(res.data[0]["datos_json"])
         datos["alumno_nombre"] = nuevo_nombre
         datos["alumno_curso"] = nuevo_curso
-        cursor.execute("UPDATE estado_alumno SET datos_json = ? WHERE username = ?", (json.dumps(datos), old_username))
-        
-    conn.commit()
-    conn.close()
+        supabase.table("estado_alumno").update({"datos_json": json.dumps(datos)}).eq("username", old_username).execute()
+
+    registrar_log("admin", "MODIFICACION_USUARIO", f"Actualizados datos de {old_username}")
 
 def admin_reset_password(username, nueva_clave):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE usuarios SET password = ? WHERE username = ?", (hash_pass(nueva_clave), username))
-    conn.commit()
-    conn.close()
+    supabase.table("usuarios").update({"password": hash_pass(nueva_clave)}).eq("username", username).execute()
+    registrar_log("admin", "RESET_PASSWORD", f"Restablecida clave de {username}")
 
 def eliminar_usuario(username):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM estado_alumno WHERE username = ?", (username,))
-    cursor.execute("DELETE FROM usuarios WHERE username = ?", (username,))
-    conn.commit()
-    conn.close()
+    supabase.table("estado_alumno").delete().eq("username", username).execute()
+    supabase.table("logs_actividad").delete().eq("username", username).execute()
+    supabase.table("usuarios").delete().eq("username", username).execute()
+    registrar_log("admin", "ELIMINAR_USUARIO", f"Usuario eliminado: {username}")
+
+def obtener_logs_auditoria():
+    res = supabase.table("logs_actividad").select("id, username, fecha_hora, accion, detalle").order("id", desc=True).limit(200).execute()
+    return res.data
 
 # ==========================================
 # 2. CONTROL DE ACCESO Y SESIÓN
@@ -252,6 +232,8 @@ if not st.session_state["autenticado"]:
                     st.session_state.padron_articulos = []
                     st.session_state.libro_diario = []
                     st.session_state.submayores = {}
+
+                registrar_log(user_clean, "INICIO_SESION", "Ingreso exitoso al sistema")
                 st.rerun()
             else:
                 st.error("Credenciales incorrectas.")
@@ -296,18 +278,13 @@ if not st.session_state["autenticado"]:
             p_clean = rec_pass_nueva.strip()
 
             if u_clean and n_clean and p_clean:
-                conn = sqlite3.connect(DB_NAME)
-                cursor = conn.cursor()
-                cursor.execute("SELECT * FROM usuarios WHERE username = ? AND LOWER(nombre_alumno) = LOWER(?)", (u_clean, n_clean))
-                user_match = cursor.fetchone()
-                
-                if user_match:
-                    cursor.execute("UPDATE usuarios SET password = ? WHERE username = ?", (hash_pass(p_clean), u_clean))
-                    conn.commit()
+                res = supabase.table("usuarios").select("*").eq("username", u_clean).ilike("nombre_alumno", n_clean).execute()
+                if res.data:
+                    supabase.table("usuarios").update({"password": hash_pass(p_clean)}).eq("username", u_clean).execute()
+                    registrar_log(u_clean, "RECUPERACION_PASSWORD", "Restablecimiento de clave realizado")
                     st.success("¡Contraseña restablecida con éxito! Ya puedes iniciar sesión.")
                 else:
                     st.error("Los datos ingresados no coinciden.")
-                conn.close()
             else:
                 st.error("Completa todos los campos.")
 
@@ -332,10 +309,13 @@ st.session_state.alumno_curso = st.sidebar.text_input("Curso / Domicilio", value
 if usr_act != "admin":
     if st.sidebar.button("💾 Guardar Avance en Nube"):
         guardar_estado_db(usr_act)
+        registrar_log(usr_act, "GUARDAR_AVANCE", "Avance guardado manualmente")
         st.sidebar.success("¡Avance guardado exitosamente!")
 
 if st.sidebar.button("Cerrar Sesión"):
-    guardar_estado_db(usr_act)
+    if usr_act != "admin":
+        guardar_estado_db(usr_act)
+    registrar_log(usr_act, "CIERRE_SESION", "Sesión cerrada")
     st.session_state["autenticado"] = False
     st.session_state["usuario"] = ""
     st.rerun()
@@ -502,50 +482,62 @@ menu = st.sidebar.radio("Navegación", opciones_menu)
 if menu == "👨‍🏫 Gestión de Alumnos":
     st.header("👨‍🏫 Panel de Control Docente y Administración de Usuarios")
     
-    usuarios_list = obtener_todos_usuarios()
-    if usuarios_list:
-        df_u = pd.DataFrame(usuarios_list, columns=["Usuario / DNI", "Nombre Completo del Alumno", "Curso / Domicilio"])
-        st.dataframe(df_u, use_container_width=True)
-        
-        st.divider()
-        col_adm1, col_adm2, col_adm3 = st.columns(3)
-        
-        with col_adm1:
-            st.markdown("##### ✏️ Editar Datos de Usuario")
-            user_edit = st.selectbox("Seleccionar Usuario", [u[0] for u in usuarios_list], key="sel_edit_adm")
-            u_datos = obtener_datos_usuario(user_edit)
-            if u_datos:
-                with st.form("form_edit_user"):
-                    nuevo_nombre = st.text_input("Nombre Completo", value=u_datos[1])
-                    nuevo_curso = st.text_input("Curso / Domicilio", value=u_datos[2])
-                    if st.form_submit_button("Guardar Cambios", type="primary"):
-                        if nuevo_nombre.strip() and nuevo_curso.strip():
-                            admin_actualizar_usuario(user_edit, nuevo_nombre.strip(), nuevo_curso.strip())
-                            st.success(f"Datos del usuario '{user_edit}' actualizados correctamente.")
-                            st.rerun()
-                        else:
-                            st.error("Los campos no pueden estar vacíos.")
-        
-        with col_adm2:
-            st.markdown("##### 🔑 Restablecer Contraseña")
-            user_reset = st.selectbox("Seleccionar Alumno", [u[0] for u in usuarios_list], key="sel_reset_adm")
-            pass_nueva = st.text_input("Nueva Contraseña", type="password", key="pass_reset_adm")
-            if st.button("Actualizar Contraseña", type="primary"):
-                if pass_nueva.strip():
-                    admin_reset_password(user_reset, pass_nueva.strip())
-                    st.success(f"Contraseña de '{user_reset}' actualizada con éxito.")
-                else:
-                    st.error("Ingresa una contraseña válida.")
-                    
-        with col_adm3:
-            st.markdown("##### 🗑️ Eliminar Usuario")
-            user_del = st.selectbox("Seleccionar Alumno a Eliminar", [u[0] for u in usuarios_list], key="sel_del_adm")
-            if st.button("Eliminar Cuenta Definitivamente"):
-                eliminar_usuario(user_del)
-                st.warning(f"Usuario '{user_del}' y todos sus registros fueron eliminados.")
-                st.rerun()
-    else:
-        st.info("Aún no hay alumnos registrados en la base de datos.")
+    tab_alum, tab_logs = st.tabs(["👥 Lista de Alumnos", "📋 Registro de Auditoría / Logs de Uso"])
+
+    with tab_alum:
+        usuarios_list = obtener_todos_usuarios()
+        if usuarios_list:
+            df_u = pd.DataFrame(usuarios_list, columns=["Usuario / DNI", "Nombre Completo del Alumno", "Curso / Domicilio"])
+            st.dataframe(df_u, use_container_width=True)
+            
+            st.divider()
+            col_adm1, col_adm2, col_adm3 = st.columns(3)
+            
+            with col_adm1:
+                st.markdown("##### ✏️ Editar Datos de Usuario")
+                user_edit = st.selectbox("Seleccionar Usuario", [u[0] for u in usuarios_list], key="sel_edit_adm")
+                u_datos = obtener_datos_usuario(user_edit)
+                if u_datos:
+                    with st.form("form_edit_user"):
+                        nuevo_nombre = st.text_input("Nombre Completo", value=u_datos[1])
+                        nuevo_curso = st.text_input("Curso / Domicilio", value=u_datos[2])
+                        if st.form_submit_button("Guardar Cambios", type="primary"):
+                            if nuevo_nombre.strip() and nuevo_curso.strip():
+                                admin_actualizar_usuario(user_edit, nuevo_nombre.strip(), nuevo_curso.strip())
+                                st.success(f"Datos del usuario '{user_edit}' actualizados correctamente.")
+                                st.rerun()
+                            else:
+                                st.error("Los campos no pueden estar vacíos.")
+            
+            with col_adm2:
+                st.markdown("##### 🔑 Restablecer Contraseña")
+                user_reset = st.selectbox("Seleccionar Alumno", [u[0] for u in usuarios_list], key="sel_reset_adm")
+                pass_nueva = st.text_input("Nueva Contraseña", type="password", key="pass_reset_adm")
+                if st.button("Actualizar Contraseña", type="primary"):
+                    if pass_nueva.strip():
+                        admin_reset_password(user_reset, pass_nueva.strip())
+                        st.success(f"Contraseña de '{user_reset}' actualizada con éxito.")
+                    else:
+                        st.error("Ingresa una contraseña válida.")
+                        
+            with col_adm3:
+                st.markdown("##### 🗑️ Eliminar Usuario")
+                user_del = st.selectbox("Seleccionar Alumno a Eliminar", [u[0] for u in usuarios_list], key="sel_del_adm")
+                if st.button("Eliminar Cuenta Definitivamente"):
+                    eliminar_usuario(user_del)
+                    st.warning(f"Usuario '{user_del}' y todos sus registros fueron eliminados.")
+                    st.rerun()
+        else:
+            st.info("Aún no hay alumnos registrados en la base de datos.")
+
+    with tab_logs:
+        st.subheader("📋 Historial Reciente de Actividades y Registros")
+        logs = obtener_logs_auditoria()
+        if logs:
+            df_logs = pd.DataFrame(logs)
+            st.dataframe(df_logs, use_container_width=True)
+        else:
+            st.info("No hay registros de actividad almacenados.")
 
 # MÓDULO 1: PADRONES Y PLAN DE CUENTAS
 elif menu == "1. Padrones y Plan de Cuentas":
@@ -586,6 +578,7 @@ elif menu == "1. Padrones y Plan de Cuentas":
                         "Condicion": condicion_pago
                     })
                     guardar_estado_db(usr_act)
+                    registrar_log(usr_act, "ALTA_PADRON", f"Alta de {tipo_tercero}: {nombre}")
                     st.success(f"{tipo_tercero} '{nombre}' registrado correctamente.")
 
         st.subheader("📋 Padrón Registrado")
@@ -615,6 +608,7 @@ elif menu == "1. Padrones y Plan de Cuentas":
                             "Domicilio": e_dom, "Condicion": e_cond
                         }
                         guardar_estado_db(usr_act)
+                        registrar_log(usr_act, "EDITAR_PADRON", f"Edición de entidad: {e_nom}")
                         st.success("Entidad actualizada correctamente.")
                         st.rerun()
 
@@ -625,6 +619,7 @@ elif menu == "1. Padrones y Plan de Cuentas":
                     idx_d = nombres_padr.index(sel_del_ter)
                     st.session_state.padron_terceros.pop(idx_d)
                     guardar_estado_db(usr_act)
+                    registrar_log(usr_act, "ELIMINAR_PADRON", f"Eliminación de entidad: {sel_del_ter}")
                     st.warning(f"Entidad '{sel_del_ter}' eliminada.")
                     st.rerun()
         else:
@@ -652,6 +647,7 @@ elif menu == "1. Padrones y Plan de Cuentas":
                             "Unidad": um_art
                         })
                         guardar_estado_db(usr_act)
+                        registrar_log(usr_act, "ALTA_ARTICULO", f"Nuevo artículo: {nom_art}")
                         st.success(f"Artículo '{nom_art}' registrado en el inventario.")
 
         st.subheader("📋 Catálogo de Artículos Registrados")
@@ -678,6 +674,7 @@ elif menu == "1. Padrones y Plan de Cuentas":
                             "Código": ea_cod, "Nombre": ea_nom, "Unidad": ea_um
                         }
                         guardar_estado_db(usr_act)
+                        registrar_log(usr_act, "EDITAR_ARTICULO", f"Edición de artículo: {ea_nom}")
                         st.success("Artículo actualizado correctamente.")
                         st.rerun()
 
@@ -688,6 +685,7 @@ elif menu == "1. Padrones y Plan de Cuentas":
                     idx_da = nombres_arts.index(sel_del_art)
                     st.session_state.padron_articulos.pop(idx_da)
                     guardar_estado_db(usr_act)
+                    registrar_log(usr_act, "ELIMINAR_ARTICULO", f"Eliminación de artículo: {sel_del_art}")
                     st.warning(f"Artículo '{sel_del_art}' eliminado.")
                     st.rerun()
         else:
@@ -709,6 +707,7 @@ elif menu == "1. Padrones y Plan de Cuentas":
                         st.session_state.plan_cuentas.append(nueva_cuenta_str)
                         st.session_state.plan_cuentas.sort()
                         guardar_estado_db(usr_act)
+                        registrar_log(usr_act, "ALTA_CUENTA", f"Nueva cuenta: {nueva_cuenta_str}")
                         st.success(f"Cuenta '{nueva_cuenta_str}' agregada.")
 
         st.dataframe(pd.DataFrame({"Cuentas Disponibles": st.session_state.plan_cuentas}), use_container_width=True)
@@ -728,6 +727,7 @@ elif menu == "1. Padrones y Plan de Cuentas":
                         st.session_state.plan_cuentas[idx_cta] = nueva_cta_val.strip()
                         st.session_state.plan_cuentas.sort()
                         guardar_estado_db(usr_act)
+                        registrar_log(usr_act, "EDITAR_CUENTA", f"Cuenta modificada: {nueva_cta_val.strip()}")
                         st.success("Plan de cuentas actualizado.")
                         st.rerun()
 
@@ -737,6 +737,7 @@ elif menu == "1. Padrones y Plan de Cuentas":
             if st.button("Eliminar Cuenta"):
                 st.session_state.plan_cuentas.remove(sel_del_cta)
                 guardar_estado_db(usr_act)
+                registrar_log(usr_act, "ELIMINAR_CUENTA", f"Cuenta eliminada: {sel_del_cta}")
                 st.warning(f"Cuenta '{sel_del_cta}' eliminada.")
                 st.rerun()
 
@@ -927,6 +928,7 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                     })
 
                 guardar_estado_db(usr_act)
+                registrar_log(usr_act, "NUEVO_ASIENTO", f"Asiento N° {num_asiento} registrado por total ${total_debe:,.2f}")
                 st.session_state["asiento_form_id"] += 1
                 st.success(f"Asiento N° {num_asiento} registrado con éxito.")
                 st.rerun()
