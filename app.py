@@ -863,21 +863,24 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                 
                 st.session_state.libro_diario.append(asiento_obj)
 
-                # Actualización de Submayores
+                # Actualización de Submayores (Incluye operaciones en efectivo/contado)
                 if tercero_operacion not in ["N/A", "Sin especificar"]:
-                    for r in renglones_asiento:
-                        if tipo_operacion in ["Venta", "Cobro"] and "Clientes" in r["Cuenta"]:
-                            st.session_state.submayores["Clientes"].append({
-                                "Fecha": fecha, "Cliente": tercero_operacion, "Concepto": concepto,
-                                "Debe (Deuda)": r["Monto"] if r["Tipo"] == "Debe" else 0.0,
-                                "Haber (Pago)": r["Monto"] if r["Tipo"] == "Haber" else 0.0
-                            })
-                        elif tipo_operacion in ["Compra", "Pago"] and "Proveedores" in r["Cuenta"]:
-                            st.session_state.submayores["Proveedores"].append({
-                                "Fecha": fecha, "Proveedor": tercero_operacion, "Concepto": concepto,
-                                "Debe (Pago)": r["Monto"] if r["Tipo"] == "Debe" else 0.0,
-                                "Haber (Deuda)": r["Monto"] if r["Tipo"] == "Haber" else 0.0
-                            })
+                    if tipo_operacion in ["Venta", "Cobro"]:
+                        st.session_state.submayores["Clientes"].append({
+                            "Fecha": fecha, 
+                            "Cliente": tercero_operacion, 
+                            "Concepto": concepto,
+                            "Debe (Venta/Cargo)": total_debe if tipo_operacion == "Venta" else 0.0,
+                            "Haber (Cobro/Pago)": total_debe if tipo_operacion == "Cobro" else 0.0
+                        })
+                    elif tipo_operacion in ["Compra", "Pago"]:
+                        st.session_state.submayores["Proveedores"].append({
+                            "Fecha": fecha, 
+                            "Proveedor": tercero_operacion, 
+                            "Concepto": concepto,
+                            "Debe (Pago)": total_debe if tipo_operacion == "Pago" else 0.0,
+                            "Haber (Compra/Deuda)": total_debe if tipo_operacion == "Compra" else 0.0
+                        })
 
                 # Manejo de Stock PPP
                 if mov_stock != "Ninguno" and art_stock and cant_stock > 0:
@@ -1020,10 +1023,14 @@ elif menu == "3. Libro Mayor y Submayores":
             movs_cli = [m for m in st.session_state.submayores["Clientes"] if m["Cliente"] == cliente_sel]
             
             df_c = pd.DataFrame(movs_cli)
-            df_c["Saldo Acumulado"] = (df_c["Debe (Deuda)"] - df_c["Haber (Pago)"]).cumsum()
+            
+            col_d_c = "Debe (Venta/Cargo)" if "Debe (Venta/Cargo)" in df_c.columns else "Debe (Deuda)"
+            col_h_c = "Haber (Cobro/Pago)" if "Haber (Cobro/Pago)" in df_c.columns else "Haber (Pago)"
 
-            tot_c_debe = df_c["Debe (Deuda)"].sum()
-            tot_c_haber = df_c["Haber (Pago)"].sum()
+            df_c["Saldo Acumulado"] = (df_c[col_d_c].fillna(0) - df_c[col_h_c].fillna(0)).cumsum()
+
+            tot_c_debe = df_c[col_d_c].sum()
+            tot_c_haber = df_c[col_h_c].sum()
             saldo_c_final = df_c["Saldo Acumulado"].iloc[-1]
 
             pdf_sub_c = generar_pdf_tabla_generica(f"SUBMAYOR DE CLIENTE: {cliente_sel}", df_c)
@@ -1032,8 +1039,8 @@ elif menu == "3. Libro Mayor y Submayores":
             st.dataframe(df_c, use_container_width=True)
 
             mc1, mc2, mc3 = st.columns(3)
-            mc1.metric("Total Debe (Deuda Original)", f"${tot_c_debe:,.2f}")
-            mc2.metric("Total Haber (Pagos Recibidos)", f"${tot_c_haber:,.2f}")
+            mc1.metric("Total Ventas / Cargos", f"${tot_c_debe:,.2f}")
+            mc2.metric("Total Cobros / Pagos Recibidos", f"${tot_c_haber:,.2f}")
             mc3.metric("Saldo Pendiente del Cliente", f"${saldo_c_final:,.2f}")
         else:
             st.info("Sin registros en submayor de clientes.")
@@ -1045,10 +1052,14 @@ elif menu == "3. Libro Mayor y Submayores":
             movs_prov = [m for m in st.session_state.submayores["Proveedores"] if m["Proveedor"] == prov_sel]
             
             df_p = pd.DataFrame(movs_prov)
-            df_p["Saldo Acumulado"] = (df_p["Haber (Deuda)"] - df_p["Debe (Pago)"]).cumsum()
 
-            tot_p_debe = df_p["Debe (Pago)"].sum()
-            tot_p_haber = df_p["Haber (Deuda)"].sum()
+            col_d_p = "Debe (Pago)" if "Debe (Pago)" in df_p.columns else "Debe (Pago)"
+            col_h_p = "Haber (Compra/Deuda)" if "Haber (Compra/Deuda)" in df_p.columns else "Haber (Deuda)"
+
+            df_p["Saldo Acumulado"] = (df_p[col_h_p].fillna(0) - df_p[col_d_p].fillna(0)).cumsum()
+
+            tot_p_debe = df_p[col_d_p].sum()
+            tot_p_haber = df_p[col_h_p].sum()
             saldo_p_final = df_p["Saldo Acumulado"].iloc[-1]
 
             pdf_sub_p = generar_pdf_tabla_generica(f"SUBMAYOR DE PROVEEDOR: {prov_sel}", df_p)
@@ -1057,8 +1068,8 @@ elif menu == "3. Libro Mayor y Submayores":
             st.dataframe(df_p, use_container_width=True)
 
             mp1, mp2, mp3 = st.columns(3)
-            mp1.metric("Total Debe (Pagos Emitidos)", f"${tot_p_debe:,.2f}")
-            mp2.metric("Total Haber (Deuda Contraída)", f"${tot_p_haber:,.2f}")
+            mp1.metric("Total Pagos Emitidos", f"${tot_p_debe:,.2f}")
+            mp2.metric("Total Compras Realizadas", f"${tot_p_haber:,.2f}")
             mp3.metric("Saldo Deuda con Proveedor", f"${saldo_p_final:,.2f}")
         else:
             st.info("Sin registros en submayor de proveedores.")
