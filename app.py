@@ -180,6 +180,25 @@ def eliminar_usuario(username):
 def obtener_logs_auditoria():
     res = supabase.table("logs_actividad").select("id, username, fecha_hora, accion, detalle").order("id", desc=True).limit(200).execute()
     return res.data
+def admin_reiniciar_asientos_usuario(username):
+    # Obtener los datos actuales para mantener el nombre, curso y plan de cuentas
+    res = supabase.table("estado_alumno").select("datos_json").eq("username", username).execute()
+    if res.data and res.data[0].get("datos_json"):
+        datos = json.loads(res.data[0]["datos_json"])
+        
+        # Reiniciar las estructuras contables
+        datos["libro_diario"] = []
+        datos["submayores"] = {
+            "Clientes": [], 
+            "Proveedores": [], 
+            "Stock_Fisico": [], 
+            "Stock_Valorizado": {}
+        }
+        
+        # Actualizar en Supabase
+        json_str = json.dumps(datos)
+        supabase.table("estado_alumno").update({"datos_json": json_str}).eq("username", username).execute()
+        registrar_log("admin", "REINICIAR_ASIENTOS", f"Se reiniciaron los asientos del usuario: {username}")
 
 # ==========================================
 # 2. CONTROL DE ACCESO Y SESIÓN
