@@ -177,16 +177,12 @@ def eliminar_usuario(username):
     supabase.table("usuarios").delete().eq("username", username).execute()
     registrar_log("admin", "ELIMINAR_USUARIO", f"Usuario eliminado: {username}")
 
-def obtener_logs_auditoria():
-    res = supabase.table("logs_actividad").select("id, username, fecha_hora, accion, detalle").order("id", desc=True).limit(200).execute()
-    return res.data
 def admin_reiniciar_asientos_usuario(username):
-    # Obtener los datos actuales para mantener el nombre, curso y plan de cuentas
     res = supabase.table("estado_alumno").select("datos_json").eq("username", username).execute()
     if res.data and res.data[0].get("datos_json"):
         datos = json.loads(res.data[0]["datos_json"])
         
-        # Reiniciar las estructuras contables
+        # Blanqueamos Libro Diario y Submayores manteniendo padrones y plan de cuentas
         datos["libro_diario"] = []
         datos["submayores"] = {
             "Clientes": [], 
@@ -195,10 +191,13 @@ def admin_reiniciar_asientos_usuario(username):
             "Stock_Valorizado": {}
         }
         
-        # Actualizar en Supabase
         json_str = json.dumps(datos)
         supabase.table("estado_alumno").update({"datos_json": json_str}).eq("username", username).execute()
         registrar_log("admin", "REINICIAR_ASIENTOS", f"Se reiniciaron los asientos del usuario: {username}")
+
+def obtener_logs_auditoria():
+    res = supabase.table("logs_actividad").select("id, username, fecha_hora, accion, detalle").order("id", desc=True).limit(200).execute()
+    return res.data
 
 # ==========================================
 # 2. CONTROL DE ACCESO Y SESIÓN
@@ -503,10 +502,10 @@ if menu == "👨‍🏫 Gestión de Alumnos":
             st.dataframe(df_u, use_container_width=True)
             
             st.divider()
-            col_adm1, col_adm2, col_adm3 = st.columns(3)
+            col_adm1, col_adm2, col_adm3, col_adm4 = st.columns(4)
             
             with col_adm1:
-                st.markdown("##### ✏️ Editar Datos de Usuario")
+                st.markdown("##### ✏️ Editar Datos")
                 user_edit = st.selectbox("Seleccionar Usuario", [u[0] for u in usuarios_list], key="sel_edit_adm")
                 u_datos = obtener_datos_usuario(user_edit)
                 if u_datos:
@@ -516,28 +515,36 @@ if menu == "👨‍🏫 Gestión de Alumnos":
                         if st.form_submit_button("Guardar Cambios", type="primary"):
                             if nuevo_nombre.strip() and nuevo_curso.strip():
                                 admin_actualizar_usuario(user_edit, nuevo_nombre.strip(), nuevo_curso.strip())
-                                st.success(f"Datos del usuario '{user_edit}' actualizados correctamente.")
+                                st.success(f"Datos del usuario '{user_edit}' actualizados.")
                                 st.rerun()
                             else:
                                 st.error("Los campos no pueden estar vacíos.")
             
             with col_adm2:
-                st.markdown("##### 🔑 Restablecer Contraseña")
+                st.markdown("##### 🔑 Cambiar Clave")
                 user_reset = st.selectbox("Seleccionar Alumno", [u[0] for u in usuarios_list], key="sel_reset_adm")
                 pass_nueva = st.text_input("Nueva Contraseña", type="password", key="pass_reset_adm")
                 if st.button("Actualizar Contraseña", type="primary"):
                     if pass_nueva.strip():
                         admin_reset_password(user_reset, pass_nueva.strip())
-                        st.success(f"Contraseña de '{user_reset}' actualizada con éxito.")
+                        st.success(f"Contraseña de '{user_reset}' actualizada.")
                     else:
                         st.error("Ingresa una contraseña válida.")
-                        
+
             with col_adm3:
+                st.markdown("##### 🔄 Reiniciar Asientos")
+                user_res_ast = st.selectbox("Seleccionar Alumno", [u[0] for u in usuarios_list], key="sel_res_ast_adm")
+                if st.button("Blanquear Asientos", type="secondary"):
+                    admin_reiniciar_asientos_usuario(user_res_ast)
+                    st.success(f"Asientos de '{user_res_ast}' reiniciados.")
+                    st.rerun()
+
+            with col_adm4:
                 st.markdown("##### 🗑️ Eliminar Usuario")
                 user_del = st.selectbox("Seleccionar Alumno a Eliminar", [u[0] for u in usuarios_list], key="sel_del_adm")
                 if st.button("Eliminar Cuenta Definitivamente"):
                     eliminar_usuario(user_del)
-                    st.warning(f"Usuario '{user_del}' y todos sus registros fueron eliminados.")
+                    st.warning(f"Usuario '{user_del}' eliminado.")
                     st.rerun()
         else:
             st.info("Aún no hay alumnos registrados en la base de datos.")
@@ -1390,7 +1397,7 @@ elif menu == "6. Auditoría y Prebalance (8 Columnas)":
             mc1.metric("Sumas Originales", f"${tot_s_debe:,.2f}", delta=f"Dif: ${tot_s_debe - tot_s_haber:,.2f}")
             mc2.metric("Saldos Sin Ajuste", f"${tot_sal_deu:,.2f}", delta=f"Dif: ${tot_sal_deu - tot_sal_acr:,.2f}")
             mc3.metric("Total Ajustes", f"${tot_aj_debe:,.2f}", delta=f"Dif: ${tot_aj_debe - tot_aj_haber:,.2f}")
-            mc4.metric("Saldos Ajustados", f"${tot_aj_sal_deu:,.2f}", delta=f"Dif: ${tot_aj_sal_deu - tot_aj_sal_acr:,.2f}")
+            mc4.metric("Saldos Ajustados", f"${tot_aj_sal_deu:,.2f}", delta=f"Dif: ${tot_aj_sal_acr:,.2f}")
 
         else:
             st.info("No hay movimientos contables registrados para generar la Hoja de Trabajo.")
