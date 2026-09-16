@@ -35,7 +35,6 @@ def hash_pass(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 def init_db():
-    # Creación automática de usuario ADMIN maestro si no existe
     res = supabase.table("usuarios").select("username").eq("username", "admin").execute()
     if not res.data:
         supabase.table("usuarios").insert({
@@ -59,7 +58,6 @@ def registrar_log(username, accion, detalle=""):
 
 def registrar_usuario(username, password, nombre_alumno, curso):
     try:
-        # Insertar usuario
         supabase.table("usuarios").insert({
             "username": username,
             "password": hash_pass(password),
@@ -67,7 +65,6 @@ def registrar_usuario(username, password, nombre_alumno, curso):
             "curso": curso
         }).execute()
         
-        # Datos iniciales por defecto
         plan_base = [
             "1.1.01 Caja", "1.1.02 Banco Nación c/c",
             "1.2.01 Deudores por Ventas (Clientes)", "1.2.02 Deudores Morosos", "1.2.03 Deudores Incobrables",
@@ -88,7 +85,6 @@ def registrar_usuario(username, password, nombre_alumno, curso):
             "submayores": {"Clientes": [], "Proveedores": [], "Stock_Fisico": [], "Stock_Valorizado": {}}
         }
         
-        # Insertar estado inicial
         supabase.table("estado_alumno").insert({
             "username": username,
             "datos_json": json.dumps(datos_iniciales)
@@ -145,7 +141,6 @@ def guardar_estado_db(username):
     json_str = json.dumps(datos_exportar, default=serializar_fecha, indent=2)
     supabase.table("estado_alumno").update({"datos_json": json_str}).eq("username", username).execute()
 
-# Funciones de Administración de Usuarios
 def obtener_todos_usuarios():
     res = supabase.table("usuarios").select("username, nombre_alumno, curso").neq("username", "admin").execute()
     return [(u["username"], u["nombre_alumno"], u["curso"]) for u in res.data]
@@ -299,7 +294,6 @@ usr_act = st.session_state["usuario"]
 st.title("📚 Sistema Contable Educativo con Auditoría")
 st.write("Herramienta pedagógica para registración manual, gestión de padrones, valuación de inventarios por PPP y Hoja de Trabajo (8 Columnas).")
 
-# SIDEBAR DE USUARIO Y CONTROL
 st.sidebar.header("🎓 Datos del Estudiante")
 st.sidebar.text_input("Usuario Activo", value=usr_act, disabled=True)
 
@@ -322,7 +316,6 @@ if st.sidebar.button("Cerrar Sesión"):
 
 st.sidebar.divider()
 
-# FUNCIONES AUXILIARES DE REPORTES EN PDF
 def obtener_encabezado_pdf(styles):
     style_header_label = ParagraphStyle('HLabel', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=9, textColor=colors.HexColor('#1E293B'))
     style_header_right = ParagraphStyle('HRight', parent=styles['Normal'], fontName='Helvetica-Oblique', fontSize=8, alignment=2, textColor=colors.HexColor('#64748B'))
@@ -863,23 +856,59 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                 
                 st.session_state.libro_diario.append(asiento_obj)
 
-                # Actualización de Submayores (Incluye operaciones en efectivo/contado)
+                # =========================================================================
+                # ACTUALIZACIÓN DE SUBMAYORES (VENTA/COMPRA Y PAGO/COBRO EN EFECTIVO)
+                # =========================================================================
                 if tercero_operacion not in ["N/A", "Sin especificar"]:
-                    if tipo_operacion in ["Venta", "Cobro"]:
+                    if tipo_operacion == "Venta":
+                        # 1. Cargo de la Venta (Debe)
                         st.session_state.submayores["Clientes"].append({
                             "Fecha": fecha, 
                             "Cliente": tercero_operacion, 
-                            "Concepto": concepto,
-                            "Debe (Venta/Cargo)": total_debe if tipo_operacion == "Venta" else 0.0,
-                            "Haber (Cobro/Pago)": total_debe if tipo_operacion == "Cobro" else 0.0
+                            "Concepto": f"Venta - {concepto}",
+                            "Debe (Venta/Cargo)": total_debe,
+                            "Haber (Cobro/Pago)": 0.0
                         })
-                    elif tipo_operacion in ["Compra", "Pago"]:
+                        # 2. Descargo del Cobro en efectivo (Haber)
+                        st.session_state.submayores["Clientes"].append({
+                            "Fecha": fecha, 
+                            "Cliente": tercero_operacion, 
+                            "Concepto": f"Cobro en Efectivo/Contado - {concepto}",
+                            "Debe (Venta/Cargo)": 0.0,
+                            "Haber (Cobro/Pago)": total_debe
+                        })
+                    elif tipo_operacion == "Cobro":
+                        st.session_state.submayores["Clientes"].append({
+                            "Fecha": fecha, 
+                            "Cliente": tercero_operacion, 
+                            "Concepto": f"Cobro - {concepto}",
+                            "Debe (Venta/Cargo)": 0.0,
+                            "Haber (Cobro/Pago)": total_debe
+                        })
+                    elif tipo_operacion == "Compra":
+                        # 1. Registro de la Compra / Deuda (Haber)
                         st.session_state.submayores["Proveedores"].append({
                             "Fecha": fecha, 
                             "Proveedor": tercero_operacion, 
-                            "Concepto": concepto,
-                            "Debe (Pago)": total_debe if tipo_operacion == "Pago" else 0.0,
-                            "Haber (Compra/Deuda)": total_debe if tipo_operacion == "Compra" else 0.0
+                            "Concepto": f"Compra - {concepto}",
+                            "Debe (Pago)": 0.0,
+                            "Haber (Compra/Deuda)": total_debe
+                        })
+                        # 2. Registro del Pago en efectivo (Debe)
+                        st.session_state.submayores["Proveedores"].append({
+                            "Fecha": fecha, 
+                            "Proveedor": tercero_operacion, 
+                            "Concepto": f"Pago en Efectivo/Contado - {concepto}",
+                            "Debe (Pago)": total_debe,
+                            "Haber (Compra/Deuda)": 0.0
+                        })
+                    elif tipo_operacion == "Pago":
+                        st.session_state.submayores["Proveedores"].append({
+                            "Fecha": fecha, 
+                            "Proveedor": tercero_operacion, 
+                            "Concepto": f"Pago - {concepto}",
+                            "Debe (Pago)": total_debe,
+                            "Haber (Compra/Deuda)": 0.0
                         })
 
                 # Manejo de Stock PPP
@@ -1196,7 +1225,6 @@ elif menu == "5. Sumas y Saldos":
         if resumen:
             df_resumen = pd.DataFrame(resumen)
 
-            # Agregar Fila de Totales Generales
             tot_s_debe = df_resumen["Sumas Debe"].sum()
             tot_s_haber = df_resumen["Sumas Haber"].sum()
             tot_sal_deu = df_resumen["Saldo Deudor"].sum()
