@@ -106,12 +106,16 @@ def cargar_estado_db(username):
         for renglon in datos.get("libro_diario", []):
             if isinstance(renglon.get("Fecha"), str):
                 renglon["Fecha"] = datetime.date.fromisoformat(renglon["Fecha"])
+            if isinstance(renglon.get("Fecha_Vencimiento"), str):
+                renglon["Fecha_Vencimiento"] = datetime.date.fromisoformat(renglon["Fecha_Vencimiento"])
                 
         for clave, movs in datos.get("submayores", {}).items():
             if isinstance(movs, list):
                 for m in movs:
                     if isinstance(m.get("Fecha"), str):
                         m["Fecha"] = datetime.date.fromisoformat(m["Fecha"])
+                    if isinstance(m.get("Fecha_Vencimiento"), str):
+                        m["Fecha_Vencimiento"] = datetime.date.fromisoformat(m["Fecha_Vencimiento"])
             elif isinstance(movs, dict):
                 for art, registros in movs.items():
                     for r in registros:
@@ -182,7 +186,6 @@ def admin_reiniciar_asientos_usuario(username):
     if res.data and res.data[0].get("datos_json"):
         datos = json.loads(res.data[0]["datos_json"])
         
-        # Blanqueamos Libro Diario y Submayores manteniendo padrones y plan de cuentas
         datos["libro_diario"] = []
         datos["submayores"] = {
             "Clientes": [], 
@@ -309,8 +312,8 @@ if not st.session_state["autenticado"]:
 
 usr_act = st.session_state["usuario"]
 
-st.title("📚 Sistema Contable Educativo con Auditoría")
-st.write("Herramienta pedagógica para registración manual, gestión de padrones, valuación de inventarios por PPP y Hoja de Trabajo (8 Columnas).")
+st.title("📚 Sistema Contable Educativo con Auditoría y Flujo de Caja")
+st.write("Herramienta pedagógica para registración manual, gestión de vencimientos, flujo de caja y prebalance de 8 columnas.")
 
 st.sidebar.header("🎓 Datos del Estudiante")
 st.sidebar.text_input("Usuario Activo", value=usr_act, disabled=True)
@@ -388,8 +391,9 @@ def generar_pdf_libro_diario(asientos):
 
     for a in asientos:
         tipo_asiento_tag = f" [{a.get('Tipo_Asiento', 'Normal')}]" if a.get('Tipo_Asiento') == 'Ajuste de Auditoría' else ""
+        venc_tag = f"<br/><i>Vencimiento: {a.get('Fecha_Vencimiento')}</i>" if a.get('Fecha_Vencimiento') else ""
         data.append([
-            Paragraph(f"<b>Asiento N° {a['Asiento']}</b>{tipo_asiento_tag}<br/>{a['Fecha']}", style_normal),
+            Paragraph(f"<b>Asiento N° {a['Asiento']}</b>{tipo_asiento_tag}<br/>{a['Fecha']}{venc_tag}", style_normal),
             Paragraph(f"<b>Operación:</b> {a['Operación']}", style_normal),
             "", ""
         ])
@@ -481,7 +485,8 @@ opciones_menu = [
     "3. Libro Mayor y Submayores",
     "4. Ficha de Stock PPP",
     "5. Sumas y Saldos",
-    "6. Auditoría y Prebalance (8 Columnas)"
+    "6. Auditoría y Prebalance (8 Columnas)",
+    "7. Vencimientos y Flujo de Caja"
 ]
 
 if usr_act == "admin":
@@ -778,18 +783,42 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
     concepto = col_op4.text_input("Comprobante / Detalle", placeholder="Ej: Factura A N° 0001-00000123 / Faltante de Caja", key=f"f_concepto_{form_suffix}")
 
     tercero_operacion = "N/A"
+    fecha_vencimiento = None
+    estado_vencimiento = "Cobrado/Pagado"
+
+    col_v1, col_v2 = st.columns(2)
+
     if tipo_operacion in ["Venta", "Cobro"]:
         if lista_clientes:
-            tercero_operacion = st.selectbox("Seleccionar Cliente", ["Sin especificar"] + lista_clientes, key=f"sel_cli_{tipo_operacion}_{form_suffix}")
+            tercero_operacion = col_v1.selectbox("Seleccionar Cliente", ["Sin especificar"] + lista_clientes, key=f"sel_cli_{tipo_operacion}_{form_suffix}")
         else:
             st.warning("⚠️ No hay Clientes registrados en el Padrón (Módulo 1).")
             tercero_operacion = "Sin especificar"
+            
+        if tipo_operacion == "Venta":
+            es_credito = col_v2.checkbox("¿Operación a Crédito / Cuenta Corriente?", value=False, key=f"chk_cred_{form_suffix}")
+            if es_credito:
+                fecha_vencimiento = col_v2.date_input("Fecha de Vencimiento de Cobro", value=fecha + datetime.timedelta(days=30), key=f"f_venc_{form_suffix}")
+                estado_vencimiento = "Pendiente"
+            else:
+                fecha_vencimiento = fecha
+                estado_vencimiento = "Cobrado"
+
     elif tipo_operacion in ["Compra", "Pago"]:
         if lista_proveedores:
-            tercero_operacion = st.selectbox("Seleccionar Proveedor", ["Sin especificar"] + lista_proveedores, key=f"sel_prov_{tipo_operacion}_{form_suffix}")
+            tercero_operacion = col_v1.selectbox("Seleccionar Proveedor", ["Sin especificar"] + lista_proveedores, key=f"sel_prov_{tipo_operacion}_{form_suffix}")
         else:
             st.warning("⚠️ No hay Proveedores registrados en el Padrón (Módulo 1).")
             tercero_operacion = "Sin especificar"
+
+        if tipo_operacion == "Compra":
+            es_credito = col_v2.checkbox("¿Operación a Crédito / Cuenta Corriente?", value=False, key=f"chk_cred_p_{form_suffix}")
+            if es_credito:
+                fecha_vencimiento = col_v2.date_input("Fecha de Vencimiento de Pago", value=fecha + datetime.timedelta(days=30), key=f"f_venc_p_{form_suffix}")
+                estado_vencimiento = "Pendiente"
+            else:
+                fecha_vencimiento = fecha
+                estado_vencimiento = "Pagado"
 
     st.divider()
     st.subheader("📥 Imputaciones Contables Multi-Cuenta")
@@ -873,6 +902,7 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                 asiento_obj = {
                     "Asiento": num_asiento,
                     "Fecha": fecha,
+                    "Fecha_Vencimiento": fecha_vencimiento,
                     "Tipo_Asiento": tipo_asiento,
                     "Operación": tipo_operacion,
                     "Concepto": concepto,
@@ -883,58 +913,68 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                 st.session_state.libro_diario.append(asiento_obj)
 
                 # =========================================================================
-                # ACTUALIZACIÓN DE SUBMAYORES (VENTA/COMPRA Y PAGO/COBRO EN EFECTIVO)
+                # ACTUALIZACIÓN DE SUBMAYORES CON VENCIMIENTO
                 # =========================================================================
                 if tercero_operacion not in ["N/A", "Sin especificar"]:
                     if tipo_operacion == "Venta":
-                        # 1. Cargo de la Venta (Debe)
                         st.session_state.submayores["Clientes"].append({
                             "Fecha": fecha, 
+                            "Fecha_Vencimiento": fecha_vencimiento if fecha_vencimiento else fecha,
                             "Cliente": tercero_operacion, 
                             "Concepto": f"Venta - {concepto}",
                             "Debe (Venta/Cargo)": total_debe,
-                            "Haber (Cobro/Pago)": 0.0
+                            "Haber (Cobro/Pago)": 0.0 if estado_vencimiento == "Pendiente" else total_debe,
+                            "Estado": estado_vencimiento
                         })
-                        # 2. Descargo del Cobro en efectivo (Haber)
-                        st.session_state.submayores["Clientes"].append({
-                            "Fecha": fecha, 
-                            "Cliente": tercero_operacion, 
-                            "Concepto": f"Cobro en Efectivo/Contado - {concepto}",
-                            "Debe (Venta/Cargo)": 0.0,
-                            "Haber (Cobro/Pago)": total_debe
-                        })
+                        if estado_vencimiento == "Cobrado":
+                            st.session_state.submayores["Clientes"].append({
+                                "Fecha": fecha, 
+                                "Fecha_Vencimiento": fecha,
+                                "Cliente": tercero_operacion, 
+                                "Concepto": f"Cobro Inmediato - {concepto}",
+                                "Debe (Venta/Cargo)": 0.0,
+                                "Haber (Cobro/Pago)": total_debe,
+                                "Estado": "Cobrado"
+                            })
                     elif tipo_operacion == "Cobro":
                         st.session_state.submayores["Clientes"].append({
                             "Fecha": fecha, 
+                            "Fecha_Vencimiento": fecha,
                             "Cliente": tercero_operacion, 
                             "Concepto": f"Cobro - {concepto}",
                             "Debe (Venta/Cargo)": 0.0,
-                            "Haber (Cobro/Pago)": total_debe
+                            "Haber (Cobro/Pago)": total_debe,
+                            "Estado": "Cobrado"
                         })
                     elif tipo_operacion == "Compra":
-                        # 1. Registro de la Compra / Deuda (Haber)
                         st.session_state.submayores["Proveedores"].append({
                             "Fecha": fecha, 
+                            "Fecha_Vencimiento": fecha_vencimiento if fecha_vencimiento else fecha,
                             "Proveedor": tercero_operacion, 
                             "Concepto": f"Compra - {concepto}",
-                            "Debe (Pago)": 0.0,
-                            "Haber (Compra/Deuda)": total_debe
+                            "Debe (Pago)": 0.0 if estado_vencimiento == "Pendiente" else total_debe,
+                            "Haber (Compra/Deuda)": total_debe,
+                            "Estado": estado_vencimiento
                         })
-                        # 2. Registro del Pago en efectivo (Debe)
-                        st.session_state.submayores["Proveedores"].append({
-                            "Fecha": fecha, 
-                            "Proveedor": tercero_operacion, 
-                            "Concepto": f"Pago en Efectivo/Contado - {concepto}",
-                            "Debe (Pago)": total_debe,
-                            "Haber (Compra/Deuda)": 0.0
-                        })
+                        if estado_vencimiento == "Pagado":
+                            st.session_state.submayores["Proveedores"].append({
+                                "Fecha": fecha, 
+                                "Fecha_Vencimiento": fecha,
+                                "Proveedor": tercero_operacion, 
+                                "Concepto": f"Pago Inmediato - {concepto}",
+                                "Debe (Pago)": total_debe,
+                                "Haber (Compra/Deuda)": 0.0,
+                                "Estado": "Pagado"
+                            })
                     elif tipo_operacion == "Pago":
                         st.session_state.submayores["Proveedores"].append({
                             "Fecha": fecha, 
+                            "Fecha_Vencimiento": fecha,
                             "Proveedor": tercero_operacion, 
                             "Concepto": f"Pago - {concepto}",
                             "Debe (Pago)": total_debe,
-                            "Haber (Compra/Deuda)": 0.0
+                            "Haber (Compra/Deuda)": 0.0,
+                            "Estado": "Pagado"
                         })
 
                 # Manejo de Stock PPP
@@ -1006,6 +1046,7 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
         for asito in st.session_state.libro_diario:
             with st.container():
                 badge_ajuste = " 🛠️ *(Ajuste de Auditoría)*" if asito.get("Tipo_Asiento") == "Ajuste de Auditoría" else ""
+                venc_str = f" | Vencimiento: {asito['Fecha_Vencimiento']}" if asito.get("Fecha_Vencimiento") else ""
                 st.markdown(f"**------------------- Asiento N° {asito['Asiento']} ({asito['Fecha']}){badge_ajuste} -------------------**")
                 
                 for renglon in asito["Renglones"]:
@@ -1023,7 +1064,7 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                         col_h.write(f"${renglon['Monto']:,.2f}")
 
                 tercero_str = f" | Tercero: {asito['Tercero']}" if asito['Tercero'] != "N/A" else ""
-                st.caption(f"*Según: {asito['Concepto']}{tercero_str}*")
+                st.caption(f"*Según: {asito['Concepto']}{tercero_str}{venc_str}*")
                 st.divider()
     else:
         st.info("Sin asientos registrados.")
@@ -1403,3 +1444,174 @@ elif menu == "6. Auditoría y Prebalance (8 Columnas)":
             st.info("No hay movimientos contables registrados para generar la Hoja de Trabajo.")
     else:
         st.info("Sin asientos registrados en el Libro Diario.")
+
+# MÓDULO 7: GESTIÓN DE VENCIMIENTOS Y FLUJO DE CAJA (NUEVO)
+elif menu == "7. Vencimientos y Flujo de Caja":
+    st.header("📆 Módulo de Gestión de Vencimientos y Proyección de Flujo de Caja")
+    
+    tab_venc_c, tab_venc_p, tab_cashflow = st.tabs([
+        "📅 Libro de Vencimientos: Clientes", 
+        "📅 Libro de Vencimientos: Proveedores", 
+        "💰 Proyección de Flujo de Caja (Cash Flow)"
+    ])
+
+    hoy = datetime.date.today()
+
+    with tab_venc_c:
+        st.subheader("📋 Libro de Vencimientos de Cuentas por Cobrar (Clientes)")
+        movs_clientes = st.session_state.submayores.get("Clientes", [])
+        
+        # Filtramos comprobantes pendientes de cobro
+        pendientes_c = [m for m in movs_clientes if m.get("Estado") == "Pendiente"]
+
+        if pendientes_c:
+            for idx, item in enumerate(pendientes_c):
+                item["Días a Vencer / Vencido"] = (item["Fecha_Vencimiento"] - hoy).days if isinstance(item.get("Fecha_Vencimiento"), datetime.date) else 0
+                item["Situación"] = "🔴 Vencido" if item["Días a Vencer / Vencido"] < 0 else "🟢 En Término"
+
+            df_vc = pd.DataFrame(pendientes_c)
+            st.dataframe(df_vc[["Fecha", "Fecha_Vencimiento", "Cliente", "Concepto", "Debe (Venta/Cargo)", "Días a Vencer / Vencido", "Situación", "Estado"]], use_container_width=True)
+
+            st.divider()
+            st.markdown("##### ⚙️ Gestionar Estado de Factura de Cliente")
+            col_gc1, col_gc2 = st.columns(2)
+            
+            facturas_cli = [f"{m['Cliente']} - {m['Concepto']} (${m['Debe (Venta/Cargo)']:,.2f})" for m in pendientes_c]
+            sel_f_c = col_gc1.selectbox("Seleccionar Comprobante a Actualizar", facturas_cli, key="sel_f_c_venc")
+            idx_fc = facturas_cli.index(sel_f_c)
+            
+            nuevo_est_c = col_gc2.selectbox("Nuevo Estado", ["Pendiente", "Cobrado", "Anulado"], key="sel_nest_c")
+
+            if st.button("Actualizar Estado de Cobro"):
+                # Actualizar en submayor
+                target_item = pendientes_c[idx_fc]
+                target_item["Estado"] = nuevo_est_c
+                if nuevo_est_c == "Cobrado":
+                    target_item["Haber (Cobro/Pago)"] = target_item["Debe (Venta/Cargo)"]
+
+                guardar_estado_db(usr_act)
+                registrar_log(usr_act, "ACTUALIZAR_VENCIMIENTO_CLIENTE", f"Actualizado estado cobro a {nuevo_est_c}")
+                st.success("Estado actualizado correctamente.")
+                st.rerun()
+        else:
+            st.info("No hay facturas pendientes de cobro a clientes.")
+
+    with tab_venc_p:
+        st.subheader("📋 Libro de Vencimientos de Cuentas por Pagar (Proveedores)")
+        movs_proveedores = st.session_state.submayores.get("Proveedores", [])
+        
+        # Filtramos comprobantes pendientes de pago
+        pendientes_p = [m for m in movs_proveedores if m.get("Estado") == "Pendiente"]
+
+        if pendientes_p:
+            for idx, item in enumerate(pendientes_p):
+                item["Días a Vencer / Vencido"] = (item["Fecha_Vencimiento"] - hoy).days if isinstance(item.get("Fecha_Vencimiento"), datetime.date) else 0
+                item["Situación"] = "🔴 Vencido" if item["Días a Vencer / Vencido"] < 0 else "🟢 En Término"
+
+            df_vp = pd.DataFrame(pendientes_p)
+            st.dataframe(df_vp[["Fecha", "Fecha_Vencimiento", "Proveedor", "Concepto", "Haber (Compra/Deuda)", "Días a Vencer / Vencido", "Situación", "Estado"]], use_container_width=True)
+
+            st.divider()
+            st.markdown("##### ⚙️ Gestionar Estado de Factura de Proveedor")
+            col_gp1, col_gp2 = st.columns(2)
+            
+            facturas_prov = [f"{m['Proveedor']} - {m['Concepto']} (${m['Haber (Compra/Deuda)']:,.2f})" for m in pendientes_p]
+            sel_f_p = col_gp1.selectbox("Seleccionar Comprobante a Actualizar", facturas_prov, key="sel_f_p_venc")
+            idx_fp = facturas_prov.index(sel_f_p)
+            
+            nuevo_est_p = col_gp2.selectbox("Nuevo Estado", ["Pendiente", "Pagado", "Anulado"], key="sel_nest_p")
+
+            if st.button("Actualizar Estado de Pago"):
+                target_item = pendientes_p[idx_fp]
+                target_item["Estado"] = nuevo_est_p
+                if nuevo_est_p == "Pagado":
+                    target_item["Debe (Pago)"] = target_item["Haber (Compra/Deuda)"]
+
+                guardar_estado_db(usr_act)
+                registrar_log(usr_act, "ACTUALIZAR_VENCIMIENTO_PROVEEDOR", f"Actualizado estado pago a {nuevo_est_p}")
+                st.success("Estado actualizado correctamente.")
+                st.rerun()
+        else:
+            st.info("No hay facturas pendientes de pago a proveedores.")
+
+    with tab_cashflow:
+        st.subheader("📊 Proyección de Flujo de Caja (Cash Flow)")
+        st.write("Estima la liquidez futura combinando el saldo actual disponible de caja/banco con los vencimientos de cobros y pagos.")
+
+        # 1. Calcular Saldo Inicial de Caja / Disponibilidades
+        saldo_disponibilidades = 0.0
+        for a in st.session_state.libro_diario:
+            for r in a["Renglones"]:
+                if any(c_disp in r["Cuenta"].lower() for c_disp in ["caja", "banco", "valores a depositar"]):
+                    if r["Tipo"] == "Debe":
+                        saldo_disponibilidades += r["Monto"]
+                    else:
+                        saldo_disponibilidades -= r["Monto"]
+
+        st.metric("💵 Saldo Inicial Disponible (Caja + Banco)", f"${saldo_disponibilidades:,.2f}")
+
+        # 2. Agrupar Flujos Pendientes por Período / Mes de Vencimiento
+        flujos = []
+
+        movs_cli = st.session_state.submayores.get("Clientes", [])
+        for m in movs_cli:
+            if m.get("Estado") == "Pendiente" and isinstance(m.get("Fecha_Vencimiento"), datetime.date):
+                flujos.append({
+                    "Fecha Vencimiento": m["Fecha_Vencimiento"],
+                    "Mes/Año": m["Fecha_Vencimiento"].strftime("%Y-%m"),
+                    "Tipo": "Entrada (Cobro Cliente)",
+                    "Concepto": f"{m['Cliente']} - {m['Concepto']}",
+                    "Ingreso ($)": m.get("Debe (Venta/Cargo)", 0.0),
+                    "Egreso ($)": 0.0
+                })
+
+        movs_prv = st.session_state.submayores.get("Proveedores", [])
+        for m in movs_prv:
+            if m.get("Estado") == "Pendiente" and isinstance(m.get("Fecha_Vencimiento"), datetime.date):
+                flujos.append({
+                    "Fecha Vencimiento": m["Fecha_Vencimiento"],
+                    "Mes/Año": m["Fecha_Vencimiento"].strftime("%Y-%m"),
+                    "Tipo": "Salida (Pago Proveedor)",
+                    "Concepto": f"{m['Proveedor']} - {m['Concepto']}",
+                    "Ingreso ($)": 0.0,
+                    "Egreso ($)": m.get("Haber (Compra/Deuda)", 0.0)
+                })
+
+        if flujos:
+            df_flujos = pd.DataFrame(flujos).sort_values("Fecha Vencimiento")
+            
+            st.markdown("##### 📝 Detalle Cronológico de Vencimientos Proyectados")
+            st.dataframe(df_flujos, use_container_width=True)
+
+            # Resumen Mensual de Flujo de Caja
+            resumen_cf = df_flujos.groupby("Mes/Año").agg({
+                "Ingreso ($)": "sum",
+                "Egreso ($)": "sum"
+            }).reset_index()
+
+            resumen_cf["Flujo Neto Mensual ($)"] = resumen_cf["Ingreso ($)"] - resumen_cf["Egreso ($)"]
+            
+            # Cálculo de Saldo Acumulado Proyectado
+            saldos_acum = []
+            saldo_corr = saldo_disponibilidades
+            for _, r in resumen_cf.iterrows():
+                saldo_corr += r["Flujo Neto Mensual ($)"]
+                saldos_acum.append(saldo_corr)
+
+            resumen_cf["Saldo Caja Proyectado ($)"] = saldos_acum
+
+            st.markdown("##### 📈 Proyección Agrupada por Mes")
+            st.dataframe(
+                resumen_cf.style.format({
+                    "Ingreso ($)": "${:,.2f}",
+                    "Egreso ($)": "${:,.2f}",
+                    "Flujo Neto Mensual ($)": "${:,.2f}",
+                    "Saldo Caja Proyectado ($)": "${:,.2f}"
+                }),
+                use_container_width=True
+            )
+
+            pdf_cf = generar_pdf_tabla_generica("PROYECCION DE FLUJO DE CAJA (CASH FLOW)", resumen_cf)
+            st.download_button("📄 Exportar Flujo de Caja (PDF)", pdf_cf, "Flujo_de_Caja_Proyectado.pdf", "application/pdf")
+        else:
+            st.info("No hay cobros ni pagos pendientes programados para proyectar el flujo de caja.")
