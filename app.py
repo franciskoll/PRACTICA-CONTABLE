@@ -318,8 +318,42 @@ st.write("Herramienta pedagógica para registración manual, gestión de vencimi
 st.sidebar.header("🎓 Datos del Estudiante")
 st.sidebar.text_input("Usuario Activo", value=usr_act, disabled=True)
 
-st.session_state.alumno_nombre = st.sidebar.text_input("Nombre del Alumno", value=st.session_state.alumno_nombre, disabled=(usr_act=="admin"))
-st.session_state.alumno_curso = st.sidebar.text_input("Curso / Domicilio", value=st.session_state.alumno_curso, disabled=(usr_act=="admin"))
+# LÓGICA DE SUPERVISIÓN PARA EL ADMINISTRADOR
+if usr_act == "admin":
+    lista_alumnos = obtener_todos_usuarios()
+    if lista_alumnos:
+        opciones_alumnos = {f"{u[1]} ({u[0]}) - {u[2]}": u[0] for u in lista_alumnos}
+        
+        if "alumno_supervisado" not in st.session_state:
+            st.session_state["alumno_supervisado"] = list(opciones_alumnos.values())[0]
+
+        seleccion = st.sidebar.selectbox(
+            "👁️ Supervisar Alumno:",
+            options=list(opciones_alumnos.keys()),
+            key="sb_supervisar_alumno"
+        )
+        
+        alumno_elegido = opciones_alumnos[seleccion]
+
+        if alumno_elegido != st.session_state["alumno_supervisado"] or not st.session_state.plan_cuentas:
+            st.session_state["alumno_supervisado"] = alumno_elegido
+            estado_sup = cargar_estado_db(alumno_elegido)
+            if estado_sup:
+                st.session_state.alumno_nombre = estado_sup.get("alumno_nombre", "")
+                st.session_state.alumno_curso = estado_sup.get("alumno_curso", "")
+                st.session_state.plan_cuentas = estado_sup.get("plan_cuentas", [])
+                st.session_state.padron_terceros = estado_sup.get("padron_terceros", [])
+                st.session_state.padron_articulos = estado_sup.get("padron_articulos", [])
+                st.session_state.libro_diario = estado_sup.get("libro_diario", [])
+                st.session_state.submayores = estado_sup.get("submayores", {})
+            st.rerun()
+
+        st.sidebar.info(f"Visualizando datos de: **{st.session_state.alumno_nombre}**")
+    else:
+        st.sidebar.warning("No hay alumnos registrados aún.")
+else:
+    st.session_state.alumno_nombre = st.sidebar.text_input("Nombre del Alumno", value=st.session_state.alumno_nombre, disabled=True)
+    st.session_state.alumno_curso = st.sidebar.text_input("Curso / Domicilio", value=st.session_state.alumno_curso, disabled=True)
 
 if usr_act != "admin":
     if st.sidebar.button("💾 Guardar Avance en Nube"):
@@ -498,7 +532,7 @@ menu = st.sidebar.radio("Navegación", opciones_menu)
 if menu == "👨‍🏫 Gestión de Alumnos":
     st.header("👨‍🏫 Panel de Control Docente y Administración de Usuarios")
     
-    tab_alum, tab_logs = st.tabs(["👥 Lista de Alumnos", "📋 Registro de Auditoría / Logs de Uso"])
+    tab_alum, tab_resumen, tab_logs = st.tabs(["👥 Lista de Alumnos", "📊 Resumen de Avance General", "📋 Registro de Auditoría / Logs de Uso"])
 
     with tab_alum:
         usuarios_list = obtener_todos_usuarios()
@@ -553,6 +587,35 @@ if menu == "👨‍🏫 Gestión de Alumnos":
                     st.rerun()
         else:
             st.info("Aún no hay alumnos registrados en la base de datos.")
+
+    with tab_resumen:
+        st.subheader("📊 Avances Registrados por Alumnos")
+        usuarios_list = obtener_todos_usuarios()
+        
+        if usuarios_list:
+            resumen_alumnos = []
+            for u_code, u_nom, u_cur in usuarios_list:
+                est = cargar_estado_db(u_code)
+                if est:
+                    cant_asientos = len(est.get("libro_diario", []))
+                    cant_terceros = len(est.get("padron_terceros", []))
+                    cant_articulos = len(est.get("padron_articulos", []))
+                else:
+                    cant_asientos, cant_terceros, cant_articulos = 0, 0, 0
+                    
+                resumen_alumnos.append({
+                    "Usuario / DNI": u_code,
+                    "Alumno": u_nom,
+                    "Curso / División": u_cur,
+                    "Asientos Cargados": cant_asientos,
+                    "Clientes / Proveedores": cant_terceros,
+                    "Artículos Inventario": cant_articulos
+                })
+                
+            df_resumen_adm = pd.DataFrame(resumen_alumnos)
+            st.dataframe(df_resumen_adm, use_container_width=True)
+        else:
+            st.info("No hay alumnos registrados.")
 
     with tab_logs:
         st.subheader("📋 Historial Reciente de Actividades y Registros")
@@ -1445,7 +1508,7 @@ elif menu == "6. Auditoría y Prebalance (8 Columnas)":
     else:
         st.info("Sin asientos registrados en el Libro Diario.")
 
-# MÓDULO 7: GESTIÓN DE VENCIMIENTOS Y FLUJO DE CAJA (NUEVO)
+# MÓDULO 7: GESTIÓN DE VENCIMIENTOS Y FLUJO DE CAJA
 elif menu == "7. Vencimientos y Flujo de Caja":
     st.header("📆 Módulo de Gestión de Vencimientos y Proyección de Flujo de Caja")
     
@@ -1461,7 +1524,6 @@ elif menu == "7. Vencimientos y Flujo de Caja":
         st.subheader("📋 Libro de Vencimientos de Cuentas por Cobrar (Clientes)")
         movs_clientes = st.session_state.submayores.get("Clientes", [])
         
-        # Filtramos comprobantes pendientes de cobro
         pendientes_c = [m for m in movs_clientes if m.get("Estado") == "Pendiente"]
 
         if pendientes_c:
@@ -1483,7 +1545,6 @@ elif menu == "7. Vencimientos y Flujo de Caja":
             nuevo_est_c = col_gc2.selectbox("Nuevo Estado", ["Pendiente", "Cobrado", "Anulado"], key="sel_nest_c")
 
             if st.button("Actualizar Estado de Cobro"):
-                # Actualizar en submayor
                 target_item = pendientes_c[idx_fc]
                 target_item["Estado"] = nuevo_est_c
                 if nuevo_est_c == "Cobrado":
@@ -1500,7 +1561,6 @@ elif menu == "7. Vencimientos y Flujo de Caja":
         st.subheader("📋 Libro de Vencimientos de Cuentas por Pagar (Proveedores)")
         movs_proveedores = st.session_state.submayores.get("Proveedores", [])
         
-        # Filtramos comprobantes pendientes de pago
         pendientes_p = [m for m in movs_proveedores if m.get("Estado") == "Pendiente"]
 
         if pendientes_p:
@@ -1538,7 +1598,6 @@ elif menu == "7. Vencimientos y Flujo de Caja":
         st.subheader("📊 Proyección de Flujo de Caja (Cash Flow)")
         st.write("Estima la liquidez futura combinando el saldo actual disponible de caja/banco con los vencimientos de cobros y pagos.")
 
-        # 1. Calcular Saldo Inicial de Caja / Disponibilidades
         saldo_disponibilidades = 0.0
         for a in st.session_state.libro_diario:
             for r in a["Renglones"]:
@@ -1550,7 +1609,6 @@ elif menu == "7. Vencimientos y Flujo de Caja":
 
         st.metric("💵 Saldo Inicial Disponible (Caja + Banco)", f"${saldo_disponibilidades:,.2f}")
 
-        # 2. Agrupar Flujos Pendientes por Período / Mes de Vencimiento
         flujos = []
 
         movs_cli = st.session_state.submayores.get("Clientes", [])
@@ -1583,7 +1641,6 @@ elif menu == "7. Vencimientos y Flujo de Caja":
             st.markdown("##### 📝 Detalle Cronológico de Vencimientos Proyectados")
             st.dataframe(df_flujos, use_container_width=True)
 
-            # Resumen Mensual de Flujo de Caja
             resumen_cf = df_flujos.groupby("Mes/Año").agg({
                 "Ingreso ($)": "sum",
                 "Egreso ($)": "sum"
@@ -1591,7 +1648,6 @@ elif menu == "7. Vencimientos y Flujo de Caja":
 
             resumen_cf["Flujo Neto Mensual ($)"] = resumen_cf["Ingreso ($)"] - resumen_cf["Egreso ($)"]
             
-            # Cálculo de Saldo Acumulado Proyectado
             saldos_acum = []
             saldo_corr = saldo_disponibilidades
             for _, r in resumen_cf.iterrows():
