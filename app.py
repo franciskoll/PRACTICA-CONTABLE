@@ -331,8 +331,8 @@ if not st.session_state["autenticado"]:
             r_pass = st.text_input("Crear Contraseña", type="password")
             r_nom = st.text_input("Nombre Completo del Alumno")
             
-            r_colegio = st.selectbox("Seleccionar Colegio / Escuela", opciones=colegios_disp if colegios_disp else ["Sin definir"])
-            r_curso = st.selectbox("Seleccionar Curso / División", opciones=cursos_disp if cursos_disp else ["Sin definir"])
+            r_colegio = st.selectbox("Seleccionar Colegio / Escuela", options=colegios_disp if colegios_disp else ["Sin definir"])
+            r_curso = st.selectbox("Seleccionar Curso / División", options=cursos_disp if cursos_disp else ["Sin definir"])
             
             submit_registro = st.form_submit_button("Crear Cuenta", type="primary")
 
