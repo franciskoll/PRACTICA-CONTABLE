@@ -35,14 +35,36 @@ def hash_pass(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 def init_db():
+    # Inicializar usuario admin
     res = supabase.table("usuarios").select("username").eq("username", "admin").execute()
     if not res.data:
         supabase.table("usuarios").insert({
             "username": "admin",
             "password": hash_pass("admin123"),
             "nombre_alumno": "Profesor / Administrador",
+            "colegio": "Institucional",
             "curso": "Docente"
         }).execute()
+        
+    # Inicializar colegios por defecto si no existen
+    try:
+        res_col = supabase.table("colegios").select("id").execute()
+        if not res_col.data:
+            colegios_def = ["Escuela Técnica N° 1", "Escuela de Comercio N° 1", "Instituto San Martín"]
+            for col in colegios_def:
+                supabase.table("colegios").insert({"nombre": col}).execute()
+    except Exception:
+        pass
+
+    # Inicializar cursos por defecto si no existen
+    try:
+        res_cur = supabase.table("cursos").select("id").execute()
+        if not res_cur.data:
+            cursos_def = ["5° Año - 1° Div.", "5° Año - 2° Div.", "6° Año - 1° Div.", "6° Año - 2° Div."]
+            for cur in cursos_def:
+                supabase.table("cursos").insert({"nombre": cur}).execute()
+    except Exception:
+        pass
 
 def registrar_log(username, accion, detalle=""):
     try:
@@ -56,12 +78,44 @@ def registrar_log(username, accion, detalle=""):
     except Exception as e:
         print(f"Error registrando log: {e}")
 
-def registrar_usuario(username, password, nombre_alumno, curso):
+# Funciones de gestión de Colegios y Cursos
+def obtener_colegios():
+    try:
+        res = supabase.table("colegios").select("nombre").order("nombre").execute()
+        if res.data:
+            return [c["nombre"] for c in res.data]
+    except Exception:
+        pass
+    return ["Escuela Técnica N° 1", "Escuela de Comercio N° 1"]
+
+def obtener_cursos():
+    try:
+        res = supabase.table("cursos").select("nombre").order("nombre").execute()
+        if res.data:
+            return [c["nombre"] for c in res.data]
+    except Exception:
+        pass
+    return ["5° Año - 1° Div.", "5° Año - 2° Div.", "6° Año - 1° Div."]
+
+def agregar_colegio(nombre):
+    supabase.table("colegios").insert({"nombre": nombre}).execute()
+
+def eliminar_colegio(nombre):
+    supabase.table("colegios").delete().eq("nombre", nombre).execute()
+
+def agregar_curso(nombre):
+    supabase.table("cursos").insert({"nombre": nombre}).execute()
+
+def eliminar_curso(nombre):
+    supabase.table("cursos").delete().eq("nombre", nombre).execute()
+
+def registrar_usuario(username, password, nombre_alumno, colegio, curso):
     try:
         supabase.table("usuarios").insert({
             "username": username,
             "password": hash_pass(password),
             "nombre_alumno": nombre_alumno,
+            "colegio": colegio,
             "curso": curso
         }).execute()
         
@@ -77,6 +131,7 @@ def registrar_usuario(username, password, nombre_alumno, curso):
         
         datos_iniciales = {
             "alumno_nombre": nombre_alumno,
+            "alumno_colegio": colegio,
             "alumno_curso": curso,
             "plan_cuentas": plan_base,
             "padron_terceros": [],
@@ -90,7 +145,7 @@ def registrar_usuario(username, password, nombre_alumno, curso):
             "datos_json": json.dumps(datos_iniciales)
         }).execute()
 
-        registrar_log(username, "REGISTRO_CUENTA", f"Nuevo registro de usuario: {nombre_alumno}")
+        registrar_log(username, "REGISTRO_CUENTA", f"Nuevo registro: {nombre_alumno} ({colegio} - {curso})")
         return True
     except Exception as e:
         return False
@@ -139,6 +194,7 @@ def guardar_estado_db(username):
 
     datos_exportar = {
         "alumno_nombre": st.session_state.get("alumno_nombre", ""),
+        "alumno_colegio": st.session_state.get("alumno_colegio", ""),
         "alumno_curso": st.session_state.get("alumno_curso", ""),
         "plan_cuentas": st.session_state.get("plan_cuentas", []),
         "padron_terceros": st.session_state.get("padron_terceros", []),
@@ -151,19 +207,20 @@ def guardar_estado_db(username):
     supabase.table("estado_alumno").update({"datos_json": json_str}).eq("username", username).execute()
 
 def obtener_todos_usuarios():
-    res = supabase.table("usuarios").select("username, nombre_alumno, curso").neq("username", "admin").execute()
-    return [(u["username"], u["nombre_alumno"], u["curso"]) for u in res.data]
+    res = supabase.table("usuarios").select("username, nombre_alumno, colegio, curso").neq("username", "admin").execute()
+    return [(u["username"], u["nombre_alumno"], u.get("colegio", "Sin Colegio"), u.get("curso", "Sin Curso")) for u in res.data]
 
 def obtener_datos_usuario(username):
-    res = supabase.table("usuarios").select("username, nombre_alumno, curso").eq("username", username).execute()
+    res = supabase.table("usuarios").select("username, nombre_alumno, colegio, curso").eq("username", username).execute()
     if res.data:
         u = res.data[0]
-        return (u["username"], u["nombre_alumno"], u["curso"])
+        return (u["username"], u["nombre_alumno"], u.get("colegio", ""), u.get("curso", ""))
     return None
 
-def admin_actualizar_usuario(old_username, nuevo_nombre, nuevo_curso):
+def admin_actualizar_usuario(old_username, nuevo_nombre, nuevo_colegio, nuevo_curso):
     supabase.table("usuarios").update({
         "nombre_alumno": nuevo_nombre,
+        "colegio": nuevo_colegio,
         "curso": nuevo_curso
     }).eq("username", old_username).execute()
     
@@ -172,6 +229,7 @@ def admin_actualizar_usuario(old_username, nuevo_nombre, nuevo_curso):
         datos_raw = res.data[0]["datos_json"]
         datos = json.loads(datos_raw) if isinstance(datos_raw, str) else datos_raw
         datos["alumno_nombre"] = nuevo_nombre
+        datos["alumno_colegio"] = nuevo_colegio
         datos["alumno_curso"] = nuevo_curso
         supabase.table("estado_alumno").update({"datos_json": json.dumps(datos)}).eq("username", old_username).execute()
 
@@ -239,9 +297,11 @@ if not st.session_state["autenticado"]:
                 
                 if user_clean != "admin":
                     estado = cargar_estado_db(user_clean)
+                    datos_u = obtener_datos_usuario(user_clean)
                     if estado:
                         st.session_state.alumno_nombre = estado.get("alumno_nombre", "Alumno")
-                        st.session_state.alumno_curso = estado.get("alumno_curso", "5° Año")
+                        st.session_state.alumno_colegio = estado.get("alumno_colegio", datos_u[2] if datos_u else "")
+                        st.session_state.alumno_curso = estado.get("alumno_curso", datos_u[3] if datos_u else "")
                         st.session_state.plan_cuentas = estado.get("plan_cuentas", [])
                         st.session_state.padron_terceros = estado.get("padron_terceros", [])
                         st.session_state.padron_articulos = estado.get("padron_articulos", [])
@@ -249,6 +309,7 @@ if not st.session_state["autenticado"]:
                         st.session_state.submayores = estado.get("submayores", {})
                 else:
                     st.session_state.alumno_nombre = "Profesor / Administrador"
+                    st.session_state.alumno_colegio = "Institucional"
                     st.session_state.alumno_curso = "Docente Maestro"
                     st.session_state.plan_cuentas = []
                     st.session_state.padron_terceros = []
@@ -262,11 +323,16 @@ if not st.session_state["autenticado"]:
                 st.error("Credenciales incorrectas.")
                 
     with tab_registro:
+        colegios_disp = obtener_colegios()
+        cursos_disp = obtener_cursos()
+
         with st.form("form_registro_usuario", clear_on_submit=True):
             r_user = st.text_input("Crear Nombre de Usuario / DNI")
             r_pass = st.text_input("Crear Contraseña", type="password")
             r_nom = st.text_input("Nombre Completo del Alumno")
-            r_curso = st.text_input("Curso / Domicilio / División", value="5° Año - Contabilidad")
+            
+            r_colegio = st.selectbox("Seleccionar Colegio / Escuela", opciones=colegios_disp if colegios_disp else ["Sin definir"])
+            r_curso = st.selectbox("Seleccionar Curso / División", opciones=cursos_disp if cursos_disp else ["Sin definir"])
             
             submit_registro = st.form_submit_button("Crear Cuenta", type="primary")
 
@@ -274,12 +340,11 @@ if not st.session_state["autenticado"]:
             usuario_clean = r_user.strip()
             pass_clean = r_pass.strip()
             nom_clean = r_nom.strip()
-            curso_clean = r_curso.strip()
 
             if usuario_clean.lower() == "admin":
                 st.error("El nombre 'admin' está reservado.")
             elif usuario_clean and pass_clean and nom_clean:
-                if registrar_usuario(usuario_clean, pass_clean, nom_clean, curso_clean):
+                if registrar_usuario(usuario_clean, pass_clean, nom_clean, r_colegio, r_curso):
                     st.success("¡Cuenta creada exitosamente! Ya puedes iniciar sesión en la otra pestaña.")
                 else:
                     st.warning("El nombre de usuario o DNI ya se encuentra registrado.")
@@ -325,22 +390,38 @@ st.write("Herramienta pedagógica para registración manual, gestión de vencimi
 st.sidebar.header("🎓 Datos del Estudiante")
 st.sidebar.text_input("Usuario Activo", value=usr_act, disabled=True)
 
-# LÓGICA REFORZADA DE SUPERVISIÓN PARA EL ADMINISTRADOR
+# LÓGICA REFORZADA DE SUPERVISIÓN Y FILTRADO PARA EL ADMINISTRADOR
 if usr_act == "admin":
-    lista_alumnos = obtener_todos_usuarios()
-    if lista_alumnos:
-        mapa_alumnos = {f"{u[1]} ({u[0]}) - {u[2]}": u[0] for u in lista_alumnos}
+    st.sidebar.subheader("🔍 Filtros de Supervisión")
+    lista_alumnos_todos = obtener_todos_usuarios()
+    
+    colegios_existentes = sorted(list(set([u[2] for u in lista_alumnos_todos]))) if lista_alumnos_todos else []
+    cursos_existentes = sorted(list(set([u[3] for u in lista_alumnos_todos]))) if lista_alumnos_todos else []
+
+    col_filtro = st.sidebar.selectbox("🏫 Filtrar por Colegio:", ["Todos los Colegios"] + colegios_existentes, key="sb_filtro_colegio")
+    cur_filtro = st.sidebar.selectbox("📚 Filtrar por Curso:", ["Todos los Cursos"] + cursos_existentes, key="sb_filtro_curso")
+
+    # Filtrar alumnos según colegio y curso
+    alumnos_filtrados = lista_alumnos_todos
+    if col_filtro != "Todos los Colegios":
+        alumnos_filtrados = [u for u in alumnos_filtrados if u[2] == col_filtro]
+    if cur_filtro != "Todos los Cursos":
+        alumnos_filtrados = [u for u in alumnos_filtrados if u[3] == cur_filtro]
+
+    if alumnos_filtrados:
+        mapa_alumnos = {f"{u[1]} ({u[0]}) - {u[2]} | {u[3]}": u[0] for u in alumnos_filtrados}
         opciones_keys = list(mapa_alumnos.keys())
         
-        # Función callback para actualizar los datos al cambiar el selectbox
         def al_cambiar_alumno_supervisado():
             sel_key = st.session_state["sb_supervisar_alumno"]
             user_target = mapa_alumnos[sel_key]
             st.session_state["alumno_supervisado"] = user_target
             estado_sup = cargar_estado_db(user_target)
+            datos_u = obtener_datos_usuario(user_target)
             if estado_sup:
                 st.session_state.alumno_nombre = estado_sup.get("alumno_nombre", "")
-                st.session_state.alumno_curso = estado_sup.get("alumno_curso", "")
+                st.session_state.alumno_colegio = estado_sup.get("alumno_colegio", datos_u[2] if datos_u else "")
+                st.session_state.alumno_curso = estado_sup.get("alumno_curso", datos_u[3] if datos_u else "")
                 st.session_state.plan_cuentas = estado_sup.get("plan_cuentas", [])
                 st.session_state.padron_terceros = estado_sup.get("padron_terceros", [])
                 st.session_state.padron_articulos = estado_sup.get("padron_articulos", [])
@@ -348,6 +429,7 @@ if usr_act == "admin":
                 st.session_state.submayores = estado_sup.get("submayores", {})
             else:
                 st.session_state.alumno_nombre = "Sin Datos"
+                st.session_state.alumno_colegio = ""
                 st.session_state.alumno_curso = ""
                 st.session_state.plan_cuentas = []
                 st.session_state.padron_terceros = []
@@ -355,8 +437,7 @@ if usr_act == "admin":
                 st.session_state.libro_diario = []
                 st.session_state.submayores = {}
 
-        # Inicializar primer alumno supervisado si no existe
-        if "alumno_supervisado" not in st.session_state:
+        if "alumno_supervisado" not in st.session_state or st.session_state.get("sb_supervisar_alumno") not in opciones_keys:
             st.session_state["sb_supervisar_alumno"] = opciones_keys[0]
             al_cambiar_alumno_supervisado()
 
@@ -367,12 +448,13 @@ if usr_act == "admin":
             on_change=al_cambiar_alumno_supervisado
         )
 
-        st.sidebar.info(f"Visualizando datos de: **{st.session_state.alumno_nombre}**")
+        st.sidebar.info(f"Visualizando datos de:\n**{st.session_state.alumno_nombre}**\n\n🏫 {st.session_state.alumno_colegio}\n📚 {st.session_state.alumno_curso}")
     else:
-        st.sidebar.warning("No hay alumnos registrados aún.")
+        st.sidebar.warning("No hay alumnos que coincidan con los filtros.")
 else:
     st.session_state.alumno_nombre = st.sidebar.text_input("Nombre del Alumno", value=st.session_state.get("alumno_nombre", ""), disabled=True)
-    st.session_state.alumno_curso = st.sidebar.text_input("Curso / Domicilio", value=st.session_state.get("alumno_curso", ""), disabled=True)
+    st.session_state.alumno_colegio = st.sidebar.text_input("Colegio / Escuela", value=st.session_state.get("alumno_colegio", ""), disabled=True)
+    st.session_state.alumno_curso = st.sidebar.text_input("Curso / División", value=st.session_state.get("alumno_curso", ""), disabled=True)
 
 if usr_act != "admin":
     if st.sidebar.button("💾 Guardar Avance en Nube"):
@@ -401,7 +483,7 @@ def obtener_encabezado_pdf(styles):
             Paragraph(f"<b>Emisión:</b> {fecha_emision}", style_header_right)
         ],
         [
-            Paragraph(f"<b>Curso/Domicilio:</b> {st.session_state.get('alumno_curso', '')}", style_header_label),
+            Paragraph(f"<b>Colegio:</b> {st.session_state.get('alumno_colegio', '')} | <b>Curso:</b> {st.session_state.get('alumno_curso', '')}", style_header_label),
             Paragraph("Sistema de Practicantes Contables", style_header_right)
         ]
     ]
@@ -551,12 +633,29 @@ menu = st.sidebar.radio("Navegación", opciones_menu)
 if menu == "👨‍🏫 Gestión de Alumnos":
     st.header("👨‍🏫 Panel de Control Docente y Administración de Usuarios")
     
-    tab_alum, tab_resumen, tab_logs = st.tabs(["👥 Lista de Alumnos", "📊 Resumen de Avance General", "📋 Registro de Auditoría / Logs de Uso"])
+    tab_alum, tab_colegios_cursos, tab_resumen, tab_logs = st.tabs([
+        "👥 Lista de Alumnos", 
+        "🏫 Gestión de Colegios y Cursos",
+        "📊 Resumen de Avance General", 
+        "📋 Registro de Auditoría / Logs"
+    ])
 
     with tab_alum:
         usuarios_list = obtener_todos_usuarios()
+        
+        # Filtros de búsqueda en la tabla de alumnos
+        col_f1, col_f2 = st.columns(2)
+        filtro_col = col_f1.selectbox("🏫 Filtrar Tabla por Colegio:", ["Todos"] + sorted(list(set([u[2] for u in usuarios_list]))) if usuarios_list else ["Todos"])
+        filtro_cur = col_f2.selectbox("📚 Filtrar Tabla por Curso:", ["Todos"] + sorted(list(set([u[3] for u in usuarios_list]))) if usuarios_list else ["Todos"])
+
         if usuarios_list:
-            df_u = pd.DataFrame(usuarios_list, columns=["Usuario / DNI", "Nombre Completo del Alumno", "Curso / Domicilio"])
+            u_filtrados = usuarios_list
+            if filtro_col != "Todos":
+                u_filtrados = [u for u in u_filtrados if u[2] == filtro_col]
+            if filtro_cur != "Todos":
+                u_filtrados = [u for u in u_filtrados if u[3] == filtro_cur]
+
+            df_u = pd.DataFrame(u_filtrados, columns=["Usuario / DNI", "Nombre Completo del Alumno", "Colegio / Escuela", "Curso / División"])
             st.dataframe(df_u, use_container_width=True)
             
             st.divider()
@@ -564,23 +663,31 @@ if menu == "👨‍🏫 Gestión de Alumnos":
             
             with col_adm1:
                 st.markdown("##### ✏️ Editar Datos")
-                user_edit = st.selectbox("Seleccionar Usuario", [u[0] for u in usuarios_list], key="sel_edit_adm")
+                user_edit = st.selectbox("Seleccionar Usuario", [u[0] for u in u_filtrados], key="sel_edit_adm")
                 u_datos = obtener_datos_usuario(user_edit)
                 if u_datos:
+                    colegios_lista = obtener_colegios()
+                    cursos_lista = obtener_cursos()
+                    
                     with st.form("form_edit_user"):
                         nuevo_nombre = st.text_input("Nombre Completo", value=u_datos[1])
-                        nuevo_curso = st.text_input("Curso / Domicilio", value=u_datos[2])
+                        idx_col = colegios_lista.index(u_datos[2]) if u_datos[2] in colegios_lista else 0
+                        idx_cur = cursos_lista.index(u_datos[3]) if u_datos[3] in cursos_lista else 0
+                        
+                        nuevo_col = st.selectbox("Colegio", colegios_lista, index=idx_col)
+                        nuevo_cur = st.selectbox("Curso / División", cursos_lista, index=idx_cur)
+                        
                         if st.form_submit_button("Guardar Cambios", type="primary"):
-                            if nuevo_nombre.strip() and nuevo_curso.strip():
-                                admin_actualizar_usuario(user_edit, nuevo_nombre.strip(), nuevo_curso.strip())
+                            if nuevo_nombre.strip():
+                                admin_actualizar_usuario(user_edit, nuevo_nombre.strip(), nuevo_col, nuevo_cur)
                                 st.success(f"Datos del usuario '{user_edit}' actualizados.")
                                 st.rerun()
                             else:
-                                st.error("Los campos no pueden estar vacíos.")
+                                st.error("El nombre no puede estar vacío.")
             
             with col_adm2:
                 st.markdown("##### 🔑 Cambiar Clave")
-                user_reset = st.selectbox("Seleccionar Alumno", [u[0] for u in usuarios_list], key="sel_reset_adm")
+                user_reset = st.selectbox("Seleccionar Alumno", [u[0] for u in u_filtrados], key="sel_reset_adm")
                 pass_nueva = st.text_input("Nueva Contraseña", type="password", key="pass_reset_adm")
                 if st.button("Actualizar Contraseña", type="primary"):
                     if pass_nueva.strip():
@@ -591,7 +698,7 @@ if menu == "👨‍🏫 Gestión de Alumnos":
 
             with col_adm3:
                 st.markdown("##### 🔄 Reiniciar Asientos")
-                user_res_ast = st.selectbox("Seleccionar Alumno", [u[0] for u in usuarios_list], key="sel_res_ast_adm")
+                user_res_ast = st.selectbox("Seleccionar Alumno", [u[0] for u in u_filtrados], key="sel_res_ast_adm")
                 if st.button("Blanquear Asientos", type="secondary"):
                     admin_reiniciar_asientos_usuario(user_res_ast)
                     st.success(f"Asientos de '{user_res_ast}' reiniciados.")
@@ -599,7 +706,7 @@ if menu == "👨‍🏫 Gestión de Alumnos":
 
             with col_adm4:
                 st.markdown("##### 🗑️ Eliminar Usuario")
-                user_del = st.selectbox("Seleccionar Alumno a Eliminar", [u[0] for u in usuarios_list], key="sel_del_adm")
+                user_del = st.selectbox("Seleccionar Alumno a Eliminar", [u[0] for u in u_filtrados], key="sel_del_adm")
                 if st.button("Eliminar Cuenta Definitivamente"):
                     eliminar_usuario(user_del)
                     st.warning(f"Usuario '{user_del}' eliminado.")
@@ -607,13 +714,64 @@ if menu == "👨‍🏫 Gestión de Alumnos":
         else:
             st.info("Aún no hay alumnos registrados en la base de datos.")
 
+    with tab_colegios_cursos:
+        st.subheader("⚙️ Configuración de Colegios y Cursos (Listas Desplegables Editables)")
+        
+        col_c1, col_c2 = st.columns(2)
+        
+        with col_c1:
+            st.markdown("### 🏫 Gestión de Colegios")
+            colegios_actuales = obtener_colegios()
+            
+            with st.form("form_nuevo_colegio", clear_on_submit=True):
+                nuevo_col_input = st.text_input("Nombre del Nuevo Colegio / Escuela")
+                if st.form_submit_button("➕ Agregar Colegio", type="primary"):
+                    if nuevo_col_input.strip():
+                        agregar_colegio(nuevo_col_input.strip())
+                        st.success(f"Colegio '{nuevo_col_input.strip()}' agregado exitosamente.")
+                        st.rerun()
+                    else:
+                        st.error("Ingresa un nombre válido.")
+
+            st.divider()
+            st.markdown("##### 🗑️ Eliminar Colegio")
+            if colegios_actuales:
+                col_a_borrar = st.selectbox("Seleccionar Colegio a Eliminar", colegios_actuales, key="sel_del_col")
+                if st.button("Eliminar Colegio"):
+                    eliminar_colegio(col_a_borrar)
+                    st.warning(f"Colegio '{col_a_borrar}' eliminado.")
+                    st.rerun()
+
+        with col_c2:
+            st.markdown("### 📚 Gestión de Cursos / Divisiones")
+            cursos_actuales = obtener_cursos()
+            
+            with st.form("form_nuevo_curso", clear_on_submit=True):
+                nuevo_cur_input = st.text_input("Nombre del Nuevo Curso (Ej: 5° Año - 3° Div.)")
+                if st.form_submit_button("➕ Agregar Curso", type="primary"):
+                    if nuevo_cur_input.strip():
+                        agregar_curso(nuevo_cur_input.strip())
+                        st.success(f"Curso '{nuevo_cur_input.strip()}' agregado exitosamente.")
+                        st.rerun()
+                    else:
+                        st.error("Ingresa un nombre válido.")
+
+            st.divider()
+            st.markdown("##### 🗑️ Eliminar Curso")
+            if cursos_actuales:
+                cur_a_borrar = st.selectbox("Seleccionar Curso a Eliminar", cursos_actuales, key="sel_del_cur")
+                if st.button("Eliminar Curso"):
+                    eliminar_curso(cur_a_borrar)
+                    st.warning(f"Curso '{cur_a_borrar}' eliminado.")
+                    st.rerun()
+
     with tab_resumen:
         st.subheader("📊 Avances Registrados por Alumnos")
         usuarios_list = obtener_todos_usuarios()
         
         if usuarios_list:
             resumen_alumnos = []
-            for u_code, u_nom, u_cur in usuarios_list:
+            for u_code, u_nom, u_col, u_cur in usuarios_list:
                 est = cargar_estado_db(u_code)
                 if est:
                     cant_asientos = len(est.get("libro_diario", []))
@@ -625,6 +783,7 @@ if menu == "👨‍🏫 Gestión de Alumnos":
                 resumen_alumnos.append({
                     "Usuario / DNI": u_code,
                     "Alumno": u_nom,
+                    "Colegio": u_col,
                     "Curso / División": u_cur,
                     "Asientos Cargados": cant_asientos,
                     "Clientes / Proveedores": cant_terceros,
@@ -1590,7 +1749,7 @@ elif menu == "7. Vencimientos y Flujo de Caja":
             st.dataframe(df_vp[["Fecha", "Fecha_Vencimiento", "Proveedor", "Concepto", "Haber (Compra/Deuda)", "Días a Vencer / Vencido", "Situación", "Estado"]], use_container_width=True)
 
             st.divider()
-            st.markdown("##### ⚙️️ Gestionar Estado de Factura de Proveedor")
+            st.markdown("##### ⚙ Gestionar Estado de Factura de Proveedor")
             col_gp1, col_gp2 = st.columns(2)
             
             facturas_prov = [f"{m['Proveedor']} - {m['Concepto']} (${m['Haber (Compra/Deuda)']:,.2f})" for m in pendientes_p]
@@ -1658,34 +1817,31 @@ elif menu == "7. Vencimientos y Flujo de Caja":
             
             st.markdown("##### 📝 Detalle Cronológico de Vencimientos Proyectados")
             st.dataframe(df_flujos, use_container_width=True)
-
-            resumen_cf = df_flujos.groupby("Mes/Año").agg({
+            
+            st.divider()
+            st.markdown("##### 📊 Resumen Mensual de Liquidez Proyectada")
+            
+            resumen_mensual = df_flujos.groupby("Mes/Año").agg({
                 "Ingreso ($)": "sum",
                 "Egreso ($)": "sum"
             }).reset_index()
 
-            resumen_cf["Flujo Neto Mensual ($)"] = resumen_cf["Ingreso ($)"] - resumen_cf["Egreso ($)"]
+            resumen_mensual["Flujo Neto Mensual"] = resumen_mensual["Ingreso ($)"] - resumen_mensual["Egreso ($)"]
             
-            saldos_acum = []
-            saldo_corr = saldo_disponibilidades
-            for _, r in resumen_cf.iterrows():
-                saldo_corr += r["Flujo Neto Mensual ($)"]
-                saldos_acum.append(saldo_corr)
+            saldo_acumulado = [saldo_disponibilidades]
+            for i in range(len(resumen_mensual)):
+                saldo_acumulado.append(saldo_acumulado[-1] + resumen_mensual.loc[i, "Flujo Neto Mensual"])
+            
+            resumen_mensual["Saldo Acumulado Proyectado"] = saldo_acumulado[1:]
 
-            resumen_cf["Saldo Caja Proyectado ($)"] = saldos_acum
-
-            st.markdown("##### 📈 Proyección Agrupada por Mes")
             st.dataframe(
-                resumen_cf.style.format({
+                resumen_mensual.style.format({
                     "Ingreso ($)": "${:,.2f}",
                     "Egreso ($)": "${:,.2f}",
-                    "Flujo Neto Mensual ($)": "${:,.2f}",
-                    "Saldo Caja Proyectado ($)": "${:,.2f}"
+                    "Flujo Neto Mensual": "${:,.2f}",
+                    "Saldo Acumulado Proyectado": "${:,.2f}"
                 }),
                 use_container_width=True
             )
-
-            pdf_cf = generar_pdf_tabla_generica("PROYECCION DE FLUJO DE CAJA (CASH FLOW)", resumen_cf)
-            st.download_button("📄 Exportar Flujo de Caja (PDF)", pdf_cf, "Flujo_de_Caja_Proyectado.pdf", "application/pdf")
         else:
-            st.info("No hay cobros ni pagos pendientes programados para proyectar el flujo de caja.")
+            st.info("No hay vencimientos pendientes registrados para proyectar en el Flujo de Caja.")
