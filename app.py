@@ -100,28 +100,33 @@ def verificar_credenciales(username, password):
     return len(res.data) > 0
 
 def cargar_estado_db(username):
-    res = supabase.table("estado_alumno").select("datos_json").eq("username", username).execute()
-    if res.data and res.data[0].get("datos_json"):
-        datos = json.loads(res.data[0]["datos_json"])
-        for renglon in datos.get("libro_diario", []):
-            if isinstance(renglon.get("Fecha"), str):
-                renglon["Fecha"] = datetime.date.fromisoformat(renglon["Fecha"])
-            if isinstance(renglon.get("Fecha_Vencimiento"), str):
-                renglon["Fecha_Vencimiento"] = datetime.date.fromisoformat(renglon["Fecha_Vencimiento"])
-                
-        for clave, movs in datos.get("submayores", {}).items():
-            if isinstance(movs, list):
-                for m in movs:
-                    if isinstance(m.get("Fecha"), str):
-                        m["Fecha"] = datetime.date.fromisoformat(m["Fecha"])
-                    if isinstance(m.get("Fecha_Vencimiento"), str):
-                        m["Fecha_Vencimiento"] = datetime.date.fromisoformat(m["Fecha_Vencimiento"])
-            elif isinstance(movs, dict):
-                for art, registros in movs.items():
-                    for r in registros:
-                        if isinstance(r.get("Fecha"), str):
-                            r["Fecha"] = datetime.date.fromisoformat(r["Fecha"])
-        return datos
+    try:
+        res = supabase.table("estado_alumno").select("datos_json").eq("username", username).execute()
+        if res.data and res.data[0].get("datos_json"):
+            datos_raw = res.data[0]["datos_json"]
+            datos = json.loads(datos_raw) if isinstance(datos_raw, str) else datos_raw
+            
+            for renglon in datos.get("libro_diario", []):
+                if isinstance(renglon.get("Fecha"), str):
+                    renglon["Fecha"] = datetime.date.fromisoformat(renglon["Fecha"])
+                if isinstance(renglon.get("Fecha_Vencimiento"), str):
+                    renglon["Fecha_Vencimiento"] = datetime.date.fromisoformat(renglon["Fecha_Vencimiento"])
+                    
+            for clave, movs in datos.get("submayores", {}).items():
+                if isinstance(movs, list):
+                    for m in movs:
+                        if isinstance(m.get("Fecha"), str):
+                            m["Fecha"] = datetime.date.fromisoformat(m["Fecha"])
+                        if isinstance(m.get("Fecha_Vencimiento"), str):
+                            m["Fecha_Vencimiento"] = datetime.date.fromisoformat(m["Fecha_Vencimiento"])
+                elif isinstance(movs, dict):
+                    for art, registros in movs.items():
+                        for r in registros:
+                            if isinstance(r.get("Fecha"), str):
+                                r["Fecha"] = datetime.date.fromisoformat(r["Fecha"])
+            return datos
+    except Exception as e:
+        print(f"Error al cargar estado de {username}: {e}")
     return None
 
 def guardar_estado_db(username):
@@ -133,13 +138,13 @@ def guardar_estado_db(username):
             return o.isoformat()
 
     datos_exportar = {
-        "alumno_nombre": st.session_state.alumno_nombre,
-        "alumno_curso": st.session_state.alumno_curso,
-        "plan_cuentas": st.session_state.plan_cuentas,
-        "padron_terceros": st.session_state.padron_terceros,
-        "padron_articulos": st.session_state.padron_articulos,
-        "libro_diario": st.session_state.libro_diario,
-        "submayores": st.session_state.submayores
+        "alumno_nombre": st.session_state.get("alumno_nombre", ""),
+        "alumno_curso": st.session_state.get("alumno_curso", ""),
+        "plan_cuentas": st.session_state.get("plan_cuentas", []),
+        "padron_terceros": st.session_state.get("padron_terceros", []),
+        "padron_articulos": st.session_state.get("padron_articulos", []),
+        "libro_diario": st.session_state.get("libro_diario", []),
+        "submayores": st.session_state.get("submayores", {})
     }
     
     json_str = json.dumps(datos_exportar, default=serializar_fecha, indent=2)
@@ -164,7 +169,8 @@ def admin_actualizar_usuario(old_username, nuevo_nombre, nuevo_curso):
     
     res = supabase.table("estado_alumno").select("datos_json").eq("username", old_username).execute()
     if res.data and res.data[0].get("datos_json"):
-        datos = json.loads(res.data[0]["datos_json"])
+        datos_raw = res.data[0]["datos_json"]
+        datos = json.loads(datos_raw) if isinstance(datos_raw, str) else datos_raw
         datos["alumno_nombre"] = nuevo_nombre
         datos["alumno_curso"] = nuevo_curso
         supabase.table("estado_alumno").update({"datos_json": json.dumps(datos)}).eq("username", old_username).execute()
@@ -184,7 +190,8 @@ def eliminar_usuario(username):
 def admin_reiniciar_asientos_usuario(username):
     res = supabase.table("estado_alumno").select("datos_json").eq("username", username).execute()
     if res.data and res.data[0].get("datos_json"):
-        datos = json.loads(res.data[0]["datos_json"])
+        datos_raw = res.data[0]["datos_json"]
+        datos = json.loads(datos_raw) if isinstance(datos_raw, str) else datos_raw
         
         datos["libro_diario"] = []
         datos["submayores"] = {
@@ -318,26 +325,19 @@ st.write("Herramienta pedagógica para registración manual, gestión de vencimi
 st.sidebar.header("🎓 Datos del Estudiante")
 st.sidebar.text_input("Usuario Activo", value=usr_act, disabled=True)
 
-# LÓGICA DE SUPERVISIÓN PARA EL ADMINISTRADOR
+# LÓGICA REFORZADA DE SUPERVISIÓN PARA EL ADMINISTRADOR
 if usr_act == "admin":
     lista_alumnos = obtener_todos_usuarios()
     if lista_alumnos:
-        opciones_alumnos = {f"{u[1]} ({u[0]}) - {u[2]}": u[0] for u in lista_alumnos}
+        mapa_alumnos = {f"{u[1]} ({u[0]}) - {u[2]}": u[0] for u in lista_alumnos}
+        opciones_keys = list(mapa_alumnos.keys())
         
-        if "alumno_supervisado" not in st.session_state:
-            st.session_state["alumno_supervisado"] = list(opciones_alumnos.values())[0]
-
-        seleccion = st.sidebar.selectbox(
-            "👁️ Supervisar Alumno:",
-            options=list(opciones_alumnos.keys()),
-            key="sb_supervisar_alumno"
-        )
-        
-        alumno_elegido = opciones_alumnos[seleccion]
-
-        if alumno_elegido != st.session_state["alumno_supervisado"] or not st.session_state.plan_cuentas:
-            st.session_state["alumno_supervisado"] = alumno_elegido
-            estado_sup = cargar_estado_db(alumno_elegido)
+        # Función callback para actualizar los datos al cambiar el selectbox
+        def al_cambiar_alumno_supervisado():
+            sel_key = st.session_state["sb_supervisar_alumno"]
+            user_target = mapa_alumnos[sel_key]
+            st.session_state["alumno_supervisado"] = user_target
+            estado_sup = cargar_estado_db(user_target)
             if estado_sup:
                 st.session_state.alumno_nombre = estado_sup.get("alumno_nombre", "")
                 st.session_state.alumno_curso = estado_sup.get("alumno_curso", "")
@@ -346,14 +346,33 @@ if usr_act == "admin":
                 st.session_state.padron_articulos = estado_sup.get("padron_articulos", [])
                 st.session_state.libro_diario = estado_sup.get("libro_diario", [])
                 st.session_state.submayores = estado_sup.get("submayores", {})
-            st.rerun()
+            else:
+                st.session_state.alumno_nombre = "Sin Datos"
+                st.session_state.alumno_curso = ""
+                st.session_state.plan_cuentas = []
+                st.session_state.padron_terceros = []
+                st.session_state.padron_articulos = []
+                st.session_state.libro_diario = []
+                st.session_state.submayores = {}
+
+        # Inicializar primer alumno supervisado si no existe
+        if "alumno_supervisado" not in st.session_state:
+            st.session_state["sb_supervisar_alumno"] = opciones_keys[0]
+            al_cambiar_alumno_supervisado()
+
+        st.sidebar.selectbox(
+            "👁️ Supervisar Alumno:",
+            options=opciones_keys,
+            key="sb_supervisar_alumno",
+            on_change=al_cambiar_alumno_supervisado
+        )
 
         st.sidebar.info(f"Visualizando datos de: **{st.session_state.alumno_nombre}**")
     else:
         st.sidebar.warning("No hay alumnos registrados aún.")
 else:
-    st.session_state.alumno_nombre = st.sidebar.text_input("Nombre del Alumno", value=st.session_state.alumno_nombre, disabled=True)
-    st.session_state.alumno_curso = st.sidebar.text_input("Curso / Domicilio", value=st.session_state.alumno_curso, disabled=True)
+    st.session_state.alumno_nombre = st.sidebar.text_input("Nombre del Alumno", value=st.session_state.get("alumno_nombre", ""), disabled=True)
+    st.session_state.alumno_curso = st.sidebar.text_input("Curso / Domicilio", value=st.session_state.get("alumno_curso", ""), disabled=True)
 
 if usr_act != "admin":
     if st.sidebar.button("💾 Guardar Avance en Nube"):
@@ -378,11 +397,11 @@ def obtener_encabezado_pdf(styles):
 
     header_data = [
         [
-            Paragraph(f"<b>Estudiante:</b> {st.session_state.alumno_nombre}", style_header_label),
+            Paragraph(f"<b>Estudiante:</b> {st.session_state.get('alumno_nombre', '')}", style_header_label),
             Paragraph(f"<b>Emisión:</b> {fecha_emision}", style_header_right)
         ],
         [
-            Paragraph(f"<b>Curso/Domicilio:</b> {st.session_state.alumno_curso}", style_header_label),
+            Paragraph(f"<b>Curso/Domicilio:</b> {st.session_state.get('alumno_curso', '')}", style_header_label),
             Paragraph("Sistema de Practicantes Contables", style_header_right)
         ]
     ]
@@ -669,7 +688,7 @@ elif menu == "1. Padrones y Plan de Cuentas":
                     st.success(f"{tipo_tercero} '{nombre}' registrado correctamente.")
 
         st.subheader("📋 Padrón Registrado")
-        if st.session_state.padron_terceros:
+        if st.session_state.get("padron_terceros"):
             st.dataframe(pd.DataFrame(st.session_state.padron_terceros), use_container_width=True)
             
             st.divider()
@@ -724,7 +743,7 @@ elif menu == "1. Padrones y Plan de Cuentas":
                 if not nom_art:
                     st.error("El nombre del artículo es obligatorio.")
                 else:
-                    nombres_existentes = [a["Nombre"] for a in st.session_state.padron_articulos]
+                    nombres_existentes = [a["Nombre"] for a in st.session_state.get("padron_articulos", [])]
                     if nom_art in nombres_existentes:
                         st.warning(f"El artículo '{nom_art}' ya se encuentra registrado.")
                     else:
@@ -738,7 +757,7 @@ elif menu == "1. Padrones y Plan de Cuentas":
                         st.success(f"Artículo '{nom_art}' registrado en el inventario.")
 
         st.subheader("📋 Catálogo de Artículos Registrados")
-        if st.session_state.padron_articulos:
+        if st.session_state.get("padron_articulos"):
             st.dataframe(pd.DataFrame(st.session_state.padron_articulos), use_container_width=True)
             
             st.divider()
@@ -797,36 +816,37 @@ elif menu == "1. Padrones y Plan de Cuentas":
                         registrar_log(usr_act, "ALTA_CUENTA", f"Nueva cuenta: {nueva_cuenta_str}")
                         st.success(f"Cuenta '{nueva_cuenta_str}' agregada.")
 
-        st.dataframe(pd.DataFrame({"Cuentas Disponibles": st.session_state.plan_cuentas}), use_container_width=True)
+        st.dataframe(pd.DataFrame({"Cuentas Disponibles": st.session_state.get("plan_cuentas", [])}), use_container_width=True)
 
-        st.divider()
-        col_ec1, col_ec2 = st.columns(2)
-        
-        with col_ec1:
-            st.markdown("##### ✏️ Editar Nombre o Código de Cuenta")
-            sel_edit_cta = st.selectbox("Seleccionar Cuenta a Editar", st.session_state.plan_cuentas, key="sel_edit_cta")
-            idx_cta = st.session_state.plan_cuentas.index(sel_edit_cta)
+        if st.session_state.get("plan_cuentas"):
+            st.divider()
+            col_ec1, col_ec2 = st.columns(2)
             
-            with st.form("form_edit_cuenta"):
-                nueva_cta_val = st.text_input("Nombre / Código Modificado", value=sel_edit_cta)
-                if st.form_submit_button("Guardar Cambios en Cuenta"):
-                    if nueva_cta_val.strip():
-                        st.session_state.plan_cuentas[idx_cta] = nueva_cta_val.strip()
-                        st.session_state.plan_cuentas.sort()
-                        guardar_estado_db(usr_act)
-                        registrar_log(usr_act, "EDITAR_CUENTA", f"Cuenta modificada: {nueva_cta_val.strip()}")
-                        st.success("Plan de cuentas actualizado.")
-                        st.rerun()
+            with col_ec1:
+                st.markdown("##### ✏️ Editar Nombre o Código de Cuenta")
+                sel_edit_cta = st.selectbox("Seleccionar Cuenta a Editar", st.session_state.plan_cuentas, key="sel_edit_cta")
+                idx_cta = st.session_state.plan_cuentas.index(sel_edit_cta)
+                
+                with st.form("form_edit_cuenta"):
+                    nueva_cta_val = st.text_input("Nombre / Código Modificado", value=sel_edit_cta)
+                    if st.form_submit_button("Guardar Cambios en Cuenta"):
+                        if nueva_cta_val.strip():
+                            st.session_state.plan_cuentas[idx_cta] = nueva_cta_val.strip()
+                            st.session_state.plan_cuentas.sort()
+                            guardar_estado_db(usr_act)
+                            registrar_log(usr_act, "EDITAR_CUENTA", f"Cuenta modificada: {nueva_cta_val.strip()}")
+                            st.success("Plan de cuentas actualizado.")
+                            st.rerun()
 
-        with col_ec2:
-            st.markdown("##### 🗑️ Eliminar Cuenta del Plan")
-            sel_del_cta = st.selectbox("Seleccionar Cuenta a Eliminar", st.session_state.plan_cuentas, key="sel_del_cta")
-            if st.button("Eliminar Cuenta"):
-                st.session_state.plan_cuentas.remove(sel_del_cta)
-                guardar_estado_db(usr_act)
-                registrar_log(usr_act, "ELIMINAR_CUENTA", f"Cuenta eliminada: {sel_del_cta}")
-                st.warning(f"Cuenta '{sel_del_cta}' eliminada.")
-                st.rerun()
+            with col_ec2:
+                st.markdown("##### 🗑️ Eliminar Cuenta del Plan")
+                sel_del_cta = st.selectbox("Seleccionar Cuenta a Eliminar", st.session_state.plan_cuentas, key="sel_del_cta")
+                if st.button("Eliminar Cuenta"):
+                    st.session_state.plan_cuentas.remove(sel_del_cta)
+                    guardar_estado_db(usr_act)
+                    registrar_log(usr_act, "ELIMINAR_CUENTA", f"Cuenta eliminada: {sel_del_cta}")
+                    st.warning(f"Cuenta '{sel_del_cta}' eliminada.")
+                    st.rerun()
 
 # MÓDULO 2: LIBRO DIARIO
 elif menu == "2. Carga de Asientos (Libro Diario)":
@@ -834,9 +854,9 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
 
     form_suffix = str(st.session_state["asiento_form_id"])
 
-    lista_clientes = [t["Nombre"] for t in st.session_state.padron_terceros if t.get("Tipo") == "Cliente"]
-    lista_proveedores = [t["Nombre"] for t in st.session_state.padron_terceros if t.get("Tipo") == "Proveedor"]
-    lista_articulos = [a["Nombre"] for a in st.session_state.padron_articulos]
+    lista_clientes = [t["Nombre"] for t in st.session_state.get("padron_terceros", []) if t.get("Tipo") == "Cliente"]
+    lista_proveedores = [t["Nombre"] for t in st.session_state.get("padron_terceros", []) if t.get("Tipo") == "Proveedor"]
+    lista_articulos = [a["Nombre"] for a in st.session_state.get("padron_articulos", [])]
 
     st.subheader("📄 Datos del Comprobante y Operación")
     col_op1, col_op2, col_op3, col_op4 = st.columns([1.5, 2, 2, 2.5])
@@ -890,12 +910,12 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
 
     with col_m1:
         st.markdown("##### 1️⃣ Renglones al DEBE")
-        df_debe_init = pd.DataFrame([{"Cuenta": st.session_state.plan_cuentas[0] if st.session_state.plan_cuentas else "1.1.01 Caja", "Monto": 0.0}])
+        df_debe_init = pd.DataFrame([{"Cuenta": st.session_state.plan_cuentas[0] if st.session_state.get("plan_cuentas") else "1.1.01 Caja", "Monto": 0.0}])
         edited_debe = st.data_editor(
             df_debe_init,
             num_rows="dynamic",
             column_config={
-                "Cuenta": st.column_config.SelectboxColumn("Cuenta Contable", options=st.session_state.plan_cuentas, required=True),
+                "Cuenta": st.column_config.SelectboxColumn("Cuenta Contable", options=st.session_state.get("plan_cuentas", []), required=True),
                 "Monto": st.column_config.NumberColumn("Monto ($)", min_value=0.0, step=100.0, format="$%.2f", required=True)
             },
             key=f"editor_debe_{form_suffix}",
@@ -904,12 +924,12 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
 
     with col_m2:
         st.markdown("##### 2️⃣ Renglones al HABER")
-        df_haber_init = pd.DataFrame([{"Cuenta": st.session_state.plan_cuentas[0] if st.session_state.plan_cuentas else "1.1.01 Caja", "Monto": 0.0}])
+        df_haber_init = pd.DataFrame([{"Cuenta": st.session_state.plan_cuentas[0] if st.session_state.get("plan_cuentas") else "1.1.01 Caja", "Monto": 0.0}])
         edited_haber = st.data_editor(
             df_haber_init,
             num_rows="dynamic",
             column_config={
-                "Cuenta": st.column_config.SelectboxColumn("Cuenta Contable", options=st.session_state.plan_cuentas, required=True),
+                "Cuenta": st.column_config.SelectboxColumn("Cuenta Contable", options=st.session_state.get("plan_cuentas", []), required=True),
                 "Monto": st.column_config.NumberColumn("Monto ($)", min_value=0.0, step=100.0, format="$%.2f", required=True)
             },
             key=f"editor_haber_{form_suffix}",
@@ -975,9 +995,7 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                 
                 st.session_state.libro_diario.append(asiento_obj)
 
-                # =========================================================================
-                # ACTUALIZACIÓN DE SUBMAYORES CON VENCIMIENTO
-                # =========================================================================
+                # ACTUALIZACIÓN DE SUBMAYORES
                 if tercero_operacion not in ["N/A", "Sin especificar"]:
                     if tipo_operacion == "Venta":
                         st.session_state.submayores["Clientes"].append({
@@ -1097,12 +1115,12 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
     col_tit, col_btn = st.columns([3, 1])
     col_tit.subheader("📖 Libro Diario General")
     
-    if st.session_state.libro_diario:
+    if st.session_state.get("libro_diario"):
         pdf_diario = generar_pdf_libro_diario(st.session_state.libro_diario)
         col_btn.download_button(
             label="📄 Exportar Libro Diario (PDF)",
             data=pdf_diario,
-            file_name=f"Libro_Diario_{st.session_state.alumno_nombre.replace(' ', '_')}.pdf",
+            file_name=f"Libro_Diario_{st.session_state.get('alumno_nombre', 'Alumno').replace(' ', '_')}.pdf",
             mime="application/pdf"
         )
 
@@ -1141,8 +1159,8 @@ elif menu == "3. Libro Mayor y Submayores":
     ])
 
     with tab_mayor:
-        cuenta_sel = st.selectbox("Seleccionar Cuenta", st.session_state.plan_cuentas if st.session_state.plan_cuentas else ["1.1.01 Caja"])
-        if st.session_state.libro_diario:
+        cuenta_sel = st.selectbox("Seleccionar Cuenta", st.session_state.get("plan_cuentas", ["1.1.01 Caja"]))
+        if st.session_state.get("libro_diario"):
             renglones_flat = []
             for a in st.session_state.libro_diario:
                 for r in a["Renglones"]:
@@ -1176,7 +1194,7 @@ elif menu == "3. Libro Mayor y Submayores":
                 st.info("Sin movimientos en esta cuenta.")
 
     with tab_sub_c:
-        lista_c = list(set([m["Cliente"] for m in st.session_state.submayores.get("Clientes", [])]))
+        lista_c = list(set([m["Cliente"] for m in st.session_state.get("submayores", {}).get("Clientes", [])]))
         if lista_c:
             cliente_sel = st.selectbox("Seleccionar Cliente a Visualizar", lista_c)
             movs_cli = [m for m in st.session_state.submayores["Clientes"] if m["Cliente"] == cliente_sel]
@@ -1205,7 +1223,7 @@ elif menu == "3. Libro Mayor y Submayores":
             st.info("Sin registros en submayor de clientes.")
 
     with tab_sub_p:
-        lista_p = list(set([m["Proveedor"] for m in st.session_state.submayores.get("Proveedores", [])]))
+        lista_p = list(set([m["Proveedor"] for m in st.session_state.get("submayores", {}).get("Proveedores", [])]))
         if lista_p:
             prov_sel = st.selectbox("Seleccionar Proveedor a Visualizar", lista_p)
             movs_prov = [m for m in st.session_state.submayores["Proveedores"] if m["Proveedor"] == prov_sel]
@@ -1234,7 +1252,7 @@ elif menu == "3. Libro Mayor y Submayores":
             st.info("Sin registros en submayor de proveedores.")
 
     with tab_sub_stk:
-        if st.session_state.submayores.get("Stock_Fisico"):
+        if st.session_state.get("submayores", {}).get("Stock_Fisico"):
             df_sf = pd.DataFrame(st.session_state.submayores["Stock_Fisico"])
             
             tot_e_sf = df_sf["Entrada"].sum()
@@ -1256,7 +1274,7 @@ elif menu == "3. Libro Mayor y Submayores":
 elif menu == "4. Ficha de Stock PPP":
     st.header("📈 Ficha de Stock Valorizada - Método PPP")
 
-    fichas = st.session_state.submayores.get("Stock_Valorizado", {})
+    fichas = st.session_state.get("submayores", {}).get("Stock_Valorizado", {})
 
     if fichas:
         art_sel = st.selectbox("Seleccionar Artículo", list(fichas.keys()))
@@ -1328,10 +1346,10 @@ elif menu == "4. Ficha de Stock PPP":
 elif menu == "5. Sumas y Saldos":
     st.header("⚖️ Balance de Comprobación de Sumas y Saldos (Pre-Ajustes)")
 
-    if st.session_state.libro_diario:
+    if st.session_state.get("libro_diario"):
         resumen = []
 
-        for cuenta in st.session_state.plan_cuentas:
+        for cuenta in st.session_state.get("plan_cuentas", []):
             debe = 0.0
             haber = 0.0
             for a in st.session_state.libro_diario:
@@ -1402,10 +1420,10 @@ elif menu == "6. Auditoría y Prebalance (8 Columnas)":
     st.header("🔍 Módulo de Auditoría: Hoja de Trabajo / Balance de 8 Columnas")
     st.write("Visualización sistemática del proceso de ajuste contable y determinación de Saldos Ajustados.")
 
-    if st.session_state.libro_diario:
+    if st.session_state.get("libro_diario"):
         filas_prebalance = []
 
-        for cuenta in st.session_state.plan_cuentas:
+        for cuenta in st.session_state.get("plan_cuentas", []):
             s_debe = 0.0
             s_haber = 0.0
             a_debe = 0.0
@@ -1522,7 +1540,7 @@ elif menu == "7. Vencimientos y Flujo de Caja":
 
     with tab_venc_c:
         st.subheader("📋 Libro de Vencimientos de Cuentas por Cobrar (Clientes)")
-        movs_clientes = st.session_state.submayores.get("Clientes", [])
+        movs_clientes = st.session_state.get("submayores", {}).get("Clientes", [])
         
         pendientes_c = [m for m in movs_clientes if m.get("Estado") == "Pendiente"]
 
@@ -1559,7 +1577,7 @@ elif menu == "7. Vencimientos y Flujo de Caja":
 
     with tab_venc_p:
         st.subheader("📋 Libro de Vencimientos de Cuentas por Pagar (Proveedores)")
-        movs_proveedores = st.session_state.submayores.get("Proveedores", [])
+        movs_proveedores = st.session_state.get("submayores", {}).get("Proveedores", [])
         
         pendientes_p = [m for m in movs_proveedores if m.get("Estado") == "Pendiente"]
 
@@ -1572,7 +1590,7 @@ elif menu == "7. Vencimientos y Flujo de Caja":
             st.dataframe(df_vp[["Fecha", "Fecha_Vencimiento", "Proveedor", "Concepto", "Haber (Compra/Deuda)", "Días a Vencer / Vencido", "Situación", "Estado"]], use_container_width=True)
 
             st.divider()
-            st.markdown("##### ⚙️ Gestionar Estado de Factura de Proveedor")
+            st.markdown("##### ⚙️️ Gestionar Estado de Factura de Proveedor")
             col_gp1, col_gp2 = st.columns(2)
             
             facturas_prov = [f"{m['Proveedor']} - {m['Concepto']} (${m['Haber (Compra/Deuda)']:,.2f})" for m in pendientes_p]
@@ -1599,7 +1617,7 @@ elif menu == "7. Vencimientos y Flujo de Caja":
         st.write("Estima la liquidez futura combinando el saldo actual disponible de caja/banco con los vencimientos de cobros y pagos.")
 
         saldo_disponibilidades = 0.0
-        for a in st.session_state.libro_diario:
+        for a in st.session_state.get("libro_diario", []):
             for r in a["Renglones"]:
                 if any(c_disp in r["Cuenta"].lower() for c_disp in ["caja", "banco", "valores a depositar"]):
                     if r["Tipo"] == "Debe":
@@ -1611,7 +1629,7 @@ elif menu == "7. Vencimientos y Flujo de Caja":
 
         flujos = []
 
-        movs_cli = st.session_state.submayores.get("Clientes", [])
+        movs_cli = st.session_state.get("submayores", {}).get("Clientes", [])
         for m in movs_cli:
             if m.get("Estado") == "Pendiente" and isinstance(m.get("Fecha_Vencimiento"), datetime.date):
                 flujos.append({
@@ -1623,7 +1641,7 @@ elif menu == "7. Vencimientos y Flujo de Caja":
                     "Egreso ($)": 0.0
                 })
 
-        movs_prv = st.session_state.submayores.get("Proveedores", [])
+        movs_prv = st.session_state.get("submayores", {}).get("Proveedores", [])
         for m in movs_prv:
             if m.get("Estado") == "Pendiente" and isinstance(m.get("Fecha_Vencimiento"), datetime.date):
                 flujos.append({
