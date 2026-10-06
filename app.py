@@ -210,6 +210,132 @@ def obtener_logs_auditoria():
     return res.data
 
 # ==========================================
+# RECONSTRUCCIÓN DE SUBMAYORES TRAS ELIMINACIÓN
+# ==========================================
+
+def recalcular_submayores():
+    """Recalcula integramente los submayores a partir del Libro Diario vigente."""
+    nuevos_submayores = {
+        "Clientes": [],
+        "Proveedores": [],
+        "Stock_Fisico": [],
+        "Stock_Valorizado": {}
+    }
+    
+    for asiento in st.session_state.libro_diario:
+        tercero = asiento.get("Tercero", "N/A")
+        tipo_op = asiento.get("Operación", "")
+        fecha = asiento.get("Fecha")
+        fecha_venc = asiento.get("Fecha_Vencimiento", fecha)
+        concepto = asiento.get("Concepto", "")
+        
+        # Calcular total Debe / Haber del asiento
+        monto_debe = sum([r["Monto"] for r in asiento["Renglones"] if r["Tipo"] == "Debe"])
+        monto_haber = sum([r["Monto"] for r in asiento["Renglones"] if r["Tipo"] == "Haber"])
+        monto_total = max(monto_debe, monto_haber)
+        
+        if tercero not in ["N/A", "Sin especificar"]:
+            if tipo_op == "Venta":
+                es_pendiente = (fecha_venc != fecha and fecha_venc is not None)
+                estado = "Pendiente" if es_pendiente else "Cobrado"
+                nuevos_submayores["Clientes"].append({
+                    "Fecha": fecha,
+                    "Fecha_Vencimiento": fecha_venc if fecha_venc else fecha,
+                    "Cliente": tercero,
+                    "Concepto": f"Venta - {concepto}",
+                    "Debe (Venta/Cargo)": monto_total,
+                    "Haber (Cobro/Pago)": 0.0 if es_pendiente else monto_total,
+                    "Estado": estado
+                })
+            elif tipo_op == "Cobro":
+                nuevos_submayores["Clientes"].append({
+                    "Fecha": fecha,
+                    "Fecha_Vencimiento": fecha,
+                    "Cliente": tercero,
+                    "Concepto": f"Cobro - {concepto}",
+                    "Debe (Venta/Cargo)": 0.0,
+                    "Haber (Cobro/Pago)": monto_total,
+                    "Estado": "Cobrado"
+                })
+            elif tipo_op == "Compra":
+                es_pendiente = (fecha_venc != fecha and fecha_venc is not None)
+                estado = "Pendiente" if es_pendiente else "Pagado"
+                nuevos_submayores["Proveedores"].append({
+                    "Fecha": fecha,
+                    "Fecha_Vencimiento": fecha_venc if fecha_venc else fecha,
+                    "Proveedor": tercero,
+                    "Concepto": f"Compra - {concepto}",
+                    "Debe (Pago)": 0.0 if es_pendiente else monto_total,
+                    "Haber (Compra/Deuda)": monto_total,
+                    "Estado": estado
+                })
+            elif tipo_op == "Pago":
+                nuevos_submayores["Proveedores"].append({
+                    "Fecha": fecha,
+                    "Fecha_Vencimiento": fecha,
+                    "Proveedor": tercero,
+                    "Concepto": f"Pago - {concepto}",
+                    "Debe (Pago)": monto_total,
+                    "Haber (Compra/Deuda)": 0.0,
+                    "Estado": "Pagado"
+                })
+
+        # Recalcular Stock si el asiento incluye datos de stock
+        mov_stk = asiento.get("Mov_Stock", "Ninguno")
+        art_stk = asiento.get("Art_Stock")
+        cant_stk = asiento.get("Cant_Stock", 0)
+        pu_stk = asiento.get("PU_Stock", 0.0)
+
+        if mov_stk != "Ninguno" and art_stk and cant_stk > 0:
+            hist_sf = [m for m in nuevos_submayores["Stock_Fisico"] if m["Artículo"] == art_stk]
+            stock_f_prev = hist_sf[-1]["Stock Final"] if hist_sf else 0
+            
+            e_sf = cant_stk if mov_stk == "Entrada (Compra)" else 0
+            s_sf = cant_stk if mov_stk == "Salida (Venta)" else 0
+            stock_f_nuevo = stock_f_prev + e_sf - s_sf
+
+            nuevos_submayores["Stock_Fisico"].append({
+                "Fecha": fecha, "Artículo": art_stk, "Movimiento": mov_stk,
+                "Entrada": e_sf, "Salida": s_sf, "Stock Final": stock_f_nuevo
+            })
+
+            fichas = nuevos_submayores["Stock_Valorizado"]
+            if art_stk not in fichas:
+                fichas[art_stk] = []
+
+            historial_art = fichas[art_stk]
+            cant_saldo_prev = historial_art[-1]["Saldo Cantidad"] if historial_art else 0
+            monto_saldo_prev = historial_art[-1]["Saldo Total"] if historial_art else 0.0
+            ppp_prev = historial_art[-1]["Saldo PPP"] if historial_art else 0.0
+
+            if mov_stk == "Entrada (Compra)":
+                e_cant, e_pu = cant_stk, pu_stk
+                e_total = e_cant * e_pu
+                s_cant, s_pu, s_total = 0, 0.0, 0.0
+
+                cant_saldo_n = cant_saldo_prev + e_cant
+                monto_saldo_n = monto_saldo_prev + e_total
+                ppp_n = monto_saldo_n / cant_saldo_n if cant_saldo_n > 0 else 0.0
+            else:
+                e_cant, e_pu, e_total = 0, 0.0, 0.0
+                s_cant = cant_stk
+                s_pu = ppp_prev
+                s_total = s_cant * s_pu
+
+                cant_saldo_n = max(0, cant_saldo_prev - s_cant)
+                monto_saldo_n = max(0.0, monto_saldo_prev - s_total)
+                ppp_n = ppp_prev if cant_saldo_n > 0 else 0.0
+
+            historial_art.append({
+                "Fecha": fecha, "Concepto": concepto,
+                "E. Cant": e_cant, "E. PU": e_pu, "E. Total": e_total,
+                "S. Cant": s_cant, "S. PU": s_pu, "S. Total": s_total,
+                "Saldo Cantidad": cant_saldo_n, "Saldo PPP": ppp_n, "Saldo Total": monto_saldo_n
+            })
+
+    st.session_state.submayores = nuevos_submayores
+
+# ==========================================
 # 2. CONTROL DE ACCESO Y SESIÓN
 # ==========================================
 
@@ -332,7 +458,6 @@ if usr_act == "admin":
         mapa_alumnos = {f"{u[1]} ({u[0]}) - {u[2]}": u[0] for u in lista_alumnos}
         opciones_keys = list(mapa_alumnos.keys())
         
-        # Función callback para actualizar los datos al cambiar el selectbox
         def al_cambiar_alumno_supervisado():
             sel_key = st.session_state["sb_supervisar_alumno"]
             user_target = mapa_alumnos[sel_key]
@@ -355,7 +480,6 @@ if usr_act == "admin":
                 st.session_state.libro_diario = []
                 st.session_state.submayores = {}
 
-        # Inicializar primer alumno supervisado si no existe
         if "alumno_supervisado" not in st.session_state:
             st.session_state["sb_supervisar_alumno"] = opciones_keys[0]
             al_cambiar_alumno_supervisado()
@@ -785,7 +909,7 @@ elif menu == "1. Padrones y Plan de Cuentas":
                         st.rerun()
 
             with col_ea2:
-                st.markdown("##### 🗑️ Eliminar Artículo")
+                st.markdown("##### 🗑️️ Eliminar Artículo")
                 sel_del_art = st.selectbox("Seleccionar Artículo a Eliminar", nombres_arts, key="sel_del_art")
                 if st.button("Eliminar del Inventario"):
                     idx_da = nombres_arts.index(sel_del_art)
@@ -990,12 +1114,16 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                     "Operación": tipo_operacion,
                     "Concepto": concepto,
                     "Tercero": tercero_operacion,
-                    "Renglones": renglones_asiento
+                    "Renglones": renglones_asiento,
+                    "Mov_Stock": mov_stock,
+                    "Art_Stock": art_stock,
+                    "Cant_Stock": cant_stock,
+                    "PU_Stock": pu_stock
                 }
                 
                 st.session_state.libro_diario.append(asiento_obj)
 
-                # ACTUALIZACIÓN DE SUBMAYORES
+                # CORRECCIÓN EN SUBMAYORES PARA VENTAS/COMPRAS AL CONTADO
                 if tercero_operacion not in ["N/A", "Sin especificar"]:
                     if tipo_operacion == "Venta":
                         st.session_state.submayores["Clientes"].append({
@@ -1007,16 +1135,6 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                             "Haber (Cobro/Pago)": 0.0 if estado_vencimiento == "Pendiente" else total_debe,
                             "Estado": estado_vencimiento
                         })
-                        if estado_vencimiento == "Cobrado":
-                            st.session_state.submayores["Clientes"].append({
-                                "Fecha": fecha, 
-                                "Fecha_Vencimiento": fecha,
-                                "Cliente": tercero_operacion, 
-                                "Concepto": f"Cobro Inmediato - {concepto}",
-                                "Debe (Venta/Cargo)": 0.0,
-                                "Haber (Cobro/Pago)": total_debe,
-                                "Estado": "Cobrado"
-                            })
                     elif tipo_operacion == "Cobro":
                         st.session_state.submayores["Clientes"].append({
                             "Fecha": fecha, 
@@ -1037,16 +1155,6 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                             "Haber (Compra/Deuda)": total_debe,
                             "Estado": estado_vencimiento
                         })
-                        if estado_vencimiento == "Pagado":
-                            st.session_state.submayores["Proveedores"].append({
-                                "Fecha": fecha, 
-                                "Fecha_Vencimiento": fecha,
-                                "Proveedor": tercero_operacion, 
-                                "Concepto": f"Pago Inmediato - {concepto}",
-                                "Debe (Pago)": total_debe,
-                                "Haber (Compra/Deuda)": 0.0,
-                                "Estado": "Pagado"
-                            })
                     elif tipo_operacion == "Pago":
                         st.session_state.submayores["Proveedores"].append({
                             "Fecha": fecha, 
@@ -1124,12 +1232,32 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
             mime="application/pdf"
         )
 
-        for asito in st.session_state.libro_diario:
+        for idx, asito in enumerate(st.session_state.libro_diario):
             with st.container():
                 badge_ajuste = " 🛠️ *(Ajuste de Auditoría)*" if asito.get("Tipo_Asiento") == "Ajuste de Auditoría" else ""
                 venc_str = f" | Vencimiento: {asito['Fecha_Vencimiento']}" if asito.get("Fecha_Vencimiento") else ""
-                st.markdown(f"**------------------- Asiento N° {asito['Asiento']} ({asito['Fecha']}){badge_ajuste} -------------------**")
                 
+                col_ast_h1, col_ast_h2 = st.columns([5, 1])
+                col_ast_h1.markdown(f"**------------------- Asiento N° {asito['Asiento']} ({asito['Fecha']}){badge_ajuste} -------------------**")
+                
+                # OPCIÓN DE ELIMINACIÓN DE ASIENTOS PARA CUALQUIER USUARIO
+                with col_ast_h2:
+                    with st.popover("🗑️ Borrar"):
+                        st.write(f"¿Confirma eliminar Asiento N° {asito['Asiento']}?")
+                        if st.button("Confirmar Eliminación", key=f"btn_del_ast_{idx}"):
+                            st.session_state.libro_diario.pop(idx)
+                            
+                            # Reordenar numeración
+                            for i_ast, a_obj in enumerate(st.session_state.libro_diario):
+                                a_obj["Asiento"] = i_ast + 1
+                                
+                            # Recalcular submayores de forma integral
+                            recalcular_submayores()
+                            guardar_estado_db(usr_act)
+                            registrar_log(usr_act, "ELIMINAR_ASIENTO", f"Asiento eliminado N° {asito['Asiento']}")
+                            st.success(f"Asiento N° {asito['Asiento']} eliminado y submayores resincronizados.")
+                            st.rerun()
+
                 for renglon in asito["Renglones"]:
                     if renglon["Tipo"] == "Debe":
                         col_c, col_d, col_h = st.columns([5, 2, 2])
@@ -1590,7 +1718,7 @@ elif menu == "7. Vencimientos y Flujo de Caja":
             st.dataframe(df_vp[["Fecha", "Fecha_Vencimiento", "Proveedor", "Concepto", "Haber (Compra/Deuda)", "Días a Vencer / Vencido", "Situación", "Estado"]], use_container_width=True)
 
             st.divider()
-            st.markdown("##### ⚙️️ Gestionar Estado de Factura de Proveedor")
+            st.markdown("##### ⚙ Gestionar Estado de Factura de Proveedor")
             col_gp1, col_gp2 = st.columns(2)
             
             facturas_prov = [f"{m['Proveedor']} - {m['Concepto']} (${m['Haber (Compra/Deuda)']:,.2f})" for m in pendientes_p]
