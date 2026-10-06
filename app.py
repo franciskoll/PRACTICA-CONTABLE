@@ -70,103 +70,6 @@ def inicializar_estados():
 inicializar_estados()
 
 # ==========================================
-# FUNCIÓN DE RECONSTRUCCIÓN DE SUBMAYORES Y STOCK
-# ==========================================
-
-def reconstruir_submayores():
-    """ Recalcula submayores de Clientes, Proveedores y Fichas de Stock a partir del Libro Diario """
-    st.session_state.submayores = {
-        "Clientes": [],
-        "Proveedores": [],
-        "Stock_Fisico": [],
-        "Stock_Valorizado": {}
-    }
-
-    for a in st.session_state.libro_diario:
-        fecha = a["Fecha"]
-        tercero = a.get("Tercero", "N/A")
-        concepto = a.get("Concepto", "")
-        tipo_op = a.get("Operación", "")
-        
-        # Submayores de Clientes y Proveedores basados en los renglones del asiento
-        if tercero not in ["N/A", "Sin especificar"]:
-            for r in a["Renglones"]:
-                if tipo_op in ["Venta", "Cobro"] and "Clientes" in r["Cuenta"]:
-                    st.session_state.submayores["Clientes"].append({
-                        "Fecha": fecha,
-                        "Cliente": tercero,
-                        "Concepto": concepto,
-                        "Debe (Deuda)": r["Monto"] if r["Tipo"] == "Debe" else 0.0,
-                        "Haber (Pago)": r["Monto"] if r["Tipo"] == "Haber" else 0.0
-                    })
-                elif tipo_op in ["Compra", "Pago"] and "Proveedores" in r["Cuenta"]:
-                    st.session_state.submayores["Proveedores"].append({
-                        "Fecha": fecha,
-                        "Proveedor": tercero,
-                        "Concepto": concepto,
-                        "Debe (Pago)": r["Monto"] if r["Tipo"] == "Debe" else 0.0,
-                        "Haber (Deuda)": r["Monto"] if r["Tipo"] == "Haber" else 0.0
-                    })
-
-        # Reconstrucción de Stock PPP
-        mov_stk = a.get("Movimiento_Stock")
-        if mov_stk and mov_stk.get("Movimiento") != "Ninguno" and mov_stk.get("Articulo"):
-            art = mov_stk["Articulo"]
-            tipo_m = mov_stk["Movimiento"]
-            cant = mov_stk["Cantidad"]
-            pu = mov_stk["Precio_Unitario"]
-
-            # Stock Físico
-            historial_sf = [m for m in st.session_state.submayores["Stock_Fisico"] if m["Artículo"] == art]
-            stk_prev = historial_sf[-1]["Stock Final"] if historial_sf else 0
-            e_sf = cant if tipo_m == "Entrada (Compra)" else 0
-            s_sf = cant if tipo_m == "Salida (Venta)" else 0
-            stk_nuevo = stk_prev + e_sf - s_sf
-
-            st.session_state.submayores["Stock_Fisico"].append({
-                "Fecha": fecha,
-                "Artículo": art,
-                "Movimiento": tipo_m,
-                "Entrada": e_sf,
-                "Salida": s_sf,
-                "Stock Final": stk_nuevo
-            })
-
-            # Stock Valorizado (PPP)
-            fichas = st.session_state.submayores["Stock_Valorizado"]
-            if art not in fichas:
-                fichas[art] = []
-
-            historial_art = fichas[art]
-            cant_prev = historial_art[-1]["Saldo Cantidad"] if historial_art else 0
-            monto_prev = historial_art[-1]["Saldo Total"] if historial_art else 0.0
-            ppp_prev = historial_art[-1]["Saldo PPP"] if historial_art else 0.0
-
-            if tipo_m == "Entrada (Compra)":
-                e_cant, e_pu = cant, pu
-                e_tot = e_cant * e_pu
-                s_cant, s_pu, s_tot = 0, 0.0, 0.0
-                cant_n = cant_prev + e_cant
-                monto_n = monto_prev + e_tot
-                ppp_n = monto_n / cant_n if cant_n > 0 else 0.0
-            else:
-                e_cant, e_pu, e_tot = 0, 0.0, 0.0
-                s_cant = cant
-                s_pu = ppp_prev
-                s_tot = s_cant * s_pu
-                cant_n = max(0, cant_prev - s_cant)
-                monto_n = max(0.0, monto_prev - s_tot)
-                ppp_n = ppp_prev if cant_n > 0 else 0.0
-
-            historial_art.append({
-                "Fecha": fecha,
-                "Concepto": concepto,
-                "E. Cant": e_cant, "E. PU": e_pu, "E. Total": e_tot,
-                "S. Cant": s_cant, "S. PU": s_pu, "S. Total": s_tot,
-                "Saldo Cantidad": cant_n, "Saldo PPP": ppp_n, "Saldo Total": monto_n
-            })
-
-# ==========================================
 # SIDEBAR: DATOS DEL ALUMNO Y GUARDADO
 # ==========================================
 st.sidebar.header("🎓 Datos del Estudiante")
@@ -201,6 +104,7 @@ datos_exportar = {
 }
 
 json_str = json.dumps(datos_exportar, default=serializar_fecha, indent=2)
+
 nombre_archivo_backup = f"practica_{st.session_state.alumno_nombre.strip().replace(' ', '_')}.json"
 
 st.sidebar.download_button(
@@ -221,14 +125,28 @@ if archivo_cargado is not None:
             if isinstance(renglon.get("Fecha"), str):
                 renglon["Fecha"] = datetime.date.fromisoformat(renglon["Fecha"])
                 
+        for clave, movs in datos_recuperados.get("submayores", {}).items():
+            if isinstance(movs, list):
+                for m in movs:
+                    if isinstance(m.get("Fecha"), str):
+                        m["Fecha"] = datetime.date.fromisoformat(m["Fecha"])
+            elif isinstance(movs, dict):
+                for art, registros in movs.items():
+                    for r in registros:
+                        if isinstance(r.get("Fecha"), str):
+                            r["Fecha"] = datetime.date.fromisoformat(r["Fecha"])
+
         st.session_state.alumno_nombre = datos_recuperados.get("alumno_nombre", st.session_state.alumno_nombre)
         st.session_state.alumno_curso = datos_recuperados.get("alumno_curso", st.session_state.alumno_curso)
         st.session_state.plan_cuentas = datos_recuperados.get("plan_cuentas", st.session_state.plan_cuentas)
         st.session_state.padron_terceros = datos_recuperados.get("padron_terceros", [])
-        st.session_state.padron_articulos = datos_recuperados.get("padron_articulos", [])
-        st.session_state.libro_diario = datos_recuperados.get("libro_diario", [])
         
-        reconstruir_submayores()
+        articulos_recuperados = datos_recuperados.get("padron_articulos", st.session_state.padron_articulos)
+        st.session_state.padron_articulos = articulos_recuperados if articulos_recuperados else []
+        
+        st.session_state.libro_diario = datos_recuperados.get("libro_diario", [])
+        st.session_state.submayores = datos_recuperados.get("submayores", st.session_state.submayores)
+        
         st.sidebar.success("¡Avance cargado con éxito!")
     except Exception as e:
         st.sidebar.error("Error al leer el archivo JSON.")
@@ -311,7 +229,7 @@ def generar_pdf_libro_diario(asientos):
                 Paragraph(haber_str, style_right)
             ])
             
-        tercero_str = f" | Tercero: {a['Tercero']}" if a.get('Tercero') != "N/A" else ""
+        tercero_str = f" | Tercero: {a['Tercero']}" if a['Tercero'] != "N/A" else ""
         data.append([
             "",
             Paragraph(f"<i>Según: {a['Concepto']}{tercero_str}</i>", style_normal),
@@ -641,17 +559,74 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                     "Operación": tipo_operacion,
                     "Concepto": concepto,
                     "Tercero": tercero_operacion,
-                    "Renglones": renglones_asiento,
-                    "Movimiento_Stock": {
-                        "Movimiento": mov_stock,
-                        "Articulo": art_stock,
-                        "Cantidad": cant_stock,
-                        "Precio_Unitario": pu_stock
-                    } if mov_stock != "Ninguno" and cant_stock > 0 else None
+                    "Renglones": renglones_asiento
                 }
                 
                 st.session_state.libro_diario.append(asiento_obj)
-                reconstruir_submayores()
+
+                # Actualización de Submayores
+                if tercero_operacion not in ["N/A", "Sin especificar"]:
+                    for r in renglones_asiento:
+                        if tipo_operacion in ["Venta", "Cobro"] and "Clientes" in r["Cuenta"]:
+                            st.session_state.submayores["Clientes"].append({
+                                "Fecha": fecha, "Cliente": tercero_operacion, "Concepto": concepto,
+                                "Debe (Deuda)": r["Monto"] if r["Tipo"] == "Debe" else 0.0,
+                                "Haber (Pago)": r["Monto"] if r["Tipo"] == "Haber" else 0.0
+                            })
+                        elif tipo_operacion in ["Compra", "Pago"] and "Proveedores" in r["Cuenta"]:
+                            st.session_state.submayores["Proveedores"].append({
+                                "Fecha": fecha, "Proveedor": tercero_operacion, "Concepto": concepto,
+                                "Debe (Pago)": r["Monto"] if r["Tipo"] == "Debe" else 0.0,
+                                "Haber (Deuda)": r["Monto"] if r["Tipo"] == "Haber" else 0.0
+                            })
+
+                # Manejo de Stock PPP
+                if mov_stock != "Ninguno" and art_stock and cant_stock > 0:
+                    historial_sf = [m for m in st.session_state.submayores["Stock_Fisico"] if m["Artículo"] == art_stock]
+                    stock_f_prev = historial_sf[-1]["Stock Final"] if historial_sf else 0
+                    
+                    e_sf = cant_stock if mov_stock == "Entrada (Compra)" else 0
+                    s_sf = cant_stock if mov_stock == "Salida (Venta)" else 0
+                    stock_f_nuevo = stock_f_prev + e_sf - s_sf
+
+                    st.session_state.submayores["Stock_Fisico"].append({
+                        "Fecha": fecha, "Artículo": art_stock, "Movimiento": mov_stock,
+                        "Entrada": e_sf, "Salida": s_sf, "Stock Final": stock_f_nuevo
+                    })
+
+                    fichas = st.session_state.submayores["Stock_Valorizado"]
+                    if art_stock not in fichas:
+                        fichas[art_stock] = []
+
+                    historial_art = fichas[art_stock]
+                    cant_saldo_prev = historial_art[-1]["Saldo Cantidad"] if historial_art else 0
+                    monto_saldo_prev = historial_art[-1]["Saldo Total"] if historial_art else 0.0
+                    ppp_prev = historial_art[-1]["Saldo PPP"] if historial_art else 0.0
+
+                    if mov_stock == "Entrada (Compra)":
+                        e_cant, e_pu = cant_stock, pu_stock
+                        e_total = e_cant * e_pu
+                        s_cant, s_pu, s_total = 0, 0.0, 0.0
+
+                        cant_saldo_n = cant_saldo_prev + e_cant
+                        monto_saldo_n = monto_saldo_prev + e_total
+                        ppp_n = monto_saldo_n / cant_saldo_n if cant_saldo_n > 0 else 0.0
+                    else:
+                        e_cant, e_pu, e_total = 0, 0.0, 0.0
+                        s_cant = cant_stock
+                        s_pu = ppp_prev
+                        s_total = s_cant * s_pu
+
+                        cant_saldo_n = max(0, cant_saldo_prev - s_cant)
+                        monto_saldo_n = max(0.0, monto_saldo_prev - s_total)
+                        ppp_n = ppp_prev if cant_saldo_n > 0 else 0.0
+
+                    historial_art.append({
+                        "Fecha": fecha, "Concepto": concepto,
+                        "E. Cant": e_cant, "E. PU": e_pu, "E. Total": e_total,
+                        "S. Cant": s_cant, "S. PU": s_pu, "S. Total": s_total,
+                        "Saldo Cantidad": cant_saldo_n, "Saldo PPP": ppp_n, "Saldo Total": monto_saldo_n
+                    })
 
                 st.session_state.asiento_key += 1
                 st.success(f"Asiento N° {num_asiento} registrado con éxito.")
@@ -669,22 +644,11 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
             mime="application/pdf"
         )
 
-        for idx, asito in enumerate(st.session_state.libro_diario):
+        for asito in st.session_state.libro_diario:
             with st.container():
-                col_enc1, col_enc2 = st.columns([5, 1])
                 badge_ajuste = " 🛠️ *(Ajuste de Auditoría)*" if asito.get("Tipo_Asiento") == "Ajuste de Auditoría" else ""
-                col_enc1.markdown(f"**------------------- Asiento N° {asito['Asiento']} ({asito['Fecha']}){badge_ajuste} -------------------**")
+                st.markdown(f"**------------------- Asiento N° {asito['Asiento']} ({asito['Fecha']}){badge_ajuste} -------------------**")
                 
-                # Funcionalidad de eliminación de asientos
-                if col_enc2.button("🗑️ Eliminar", key=f"btn_del_{idx}"):
-                    st.session_state.libro_diario.pop(idx)
-                    # Renumerar asientos restantes
-                    for i, a in enumerate(st.session_state.libro_diario):
-                        a["Asiento"] = i + 1
-                    reconstruir_submayores()
-                    st.success(f"Asiento N° {asito['Asiento']} eliminado correctamente.")
-                    st.rerun()
-
                 for renglon in asito["Renglones"]:
                     if renglon["Tipo"] == "Debe":
                         col_c, col_d, col_h = st.columns([5, 2, 2])
@@ -699,7 +663,7 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                         col_d.write("")
                         col_h.write(f"${renglon['Monto']:,.2f}")
 
-                tercero_str = f" | Tercero: {asito['Tercero']}" if asito.get('Tercero') != "N/A" else ""
+                tercero_str = f" | Tercero: {asito['Tercero']}" if asito['Tercero'] != "N/A" else ""
                 st.caption(f"*Según: {asito['Concepto']}{tercero_str}*")
                 st.divider()
     else:
@@ -728,7 +692,7 @@ elif menu == "3. Libro Mayor y Submayores":
                             "Tipo": a.get("Tipo_Asiento", "Normal (Operativo)"),
                             "Operación": a["Operación"],
                             "Concepto": a["Concepto"],
-                            "Tercero": a.get("Tercero", "N/A"),
+                            "Tercero": a["Tercero"],
                             "Debe": r["Monto"] if r["Tipo"] == "Debe" else 0.0,
                             "Haber": r["Monto"] if r["Tipo"] == "Haber" else 0.0
                         })
@@ -799,7 +763,7 @@ elif menu == "3. Libro Mayor y Submayores":
             )
             st.metric("Saldo Pendiente del Cliente", f"${saldo_f:,.2f}")
         else:
-            st.info("Sin registros en submayor de clientes (solo figuran cuando interviene la cuenta 'Deudores por Ventas (Clientes)').")
+            st.info("Sin registros en submayor de clientes.")
 
     with tab_sub_p:
         lista_p = list(set([m["Proveedor"] for m in st.session_state.submayores["Proveedores"]]))
@@ -836,7 +800,7 @@ elif menu == "3. Libro Mayor y Submayores":
             )
             st.metric("Saldo Deuda con Proveedor", f"${saldo_f:,.2f}")
         else:
-            st.info("Sin registros en submayor de proveedores (solo figuran cuando interviene la cuenta 'Proveedores').")
+            st.info("Sin registros en submayor de proveedores.")
 
     with tab_sub_stk:
         if st.session_state.submayores["Stock_Fisico"]:
@@ -1070,7 +1034,6 @@ elif menu == "6. Auditoría y Prebalance (8 Columnas)":
             df_8col = pd.DataFrame(filas_prebalance)
 
             tot_s_debe = df_8col["1. Suma Debe"].sum()
-            tot_s_haber = df_8col["1. Suma Debe"].sum() # corregido para vista
             tot_s_haber = df_8col["2. Suma Haber"].sum()
             tot_sal_deu = df_8col["3. Saldo Deudor"].sum()
             tot_sal_acr = df_8col["4. Saldo Acreedor"].sum()
