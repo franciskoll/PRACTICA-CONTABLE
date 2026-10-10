@@ -259,7 +259,6 @@ def recalcular_submayores():
                     "Estado": "Cobrado"
                 })
             elif tipo_op == "Devolución de Venta":
-                # La devolución de venta resta de los ingresos/deuda del cliente (se registra en el Haber del submayor de clientes)
                 nuevos_submayores["Clientes"].append({
                     "Fecha": fecha,
                     "Fecha_Vencimiento": fecha,
@@ -274,7 +273,7 @@ def recalcular_submayores():
                 estado = "Pendiente" if es_pendiente else "Pagado"
                 nuevos_submayores["Proveedores"].append({
                     "Fecha": fecha,
-                    "Fecha_Vencimiento": fecha_venc if fecha_venc !== None else fecha,
+                    "Fecha_Vencimiento": fecha_venc if fecha_venc is not None else fecha,
                     "Proveedor": tercero,
                     "Concepto": f"Compra - {concepto}",
                     "Debe (Pago)": 0.0 if es_pendiente else monto_total,
@@ -292,7 +291,6 @@ def recalcular_submayores():
                     "Estado": "Pagado"
                 })
             elif tipo_op == "Devolución de Compra":
-                # La devolución de compra resta de la deuda con el proveedor (se registra en el Debe del submayor de proveedores)
                 nuevos_submayores["Proveedores"].append({
                     "Fecha": fecha,
                     "Fecha_Vencimiento": fecha,
@@ -303,9 +301,7 @@ def recalcular_submayores():
                     "Estado": "Anulación / Nota de Crédito"
                 })
             elif tipo_op in ["Ajuste Contable", "Otra Operación"]:
-                # Permite imputar correcciones/ajustes en cuentas corrientes de clientes o proveedores
                 if any("cliente" in r["Cuenta"].lower() or "deudores" in r["Cuenta"].lower() for r in asiento["Renglones"]):
-                    # Si el ajuste afecta cuentas deudoras
                     d_aj = sum([r["Monto"] for r in asiento["Renglones"] if r["Tipo"] == "Debe" and ("cliente" in r["Cuenta"].lower() or "deudores" in r["Cuenta"].lower())])
                     h_aj = sum([r["Monto"] for r in asiento["Renglones"] if r["Tipo"] == "Haber" and ("cliente" in r["Cuenta"].lower() or "deudores" in r["Cuenta"].lower())])
                     nuevos_submayores["Clientes"].append({
@@ -330,7 +326,6 @@ def recalcular_submayores():
                         "Estado": "Ajustado"
                     })
 
-        # Recalcular Stock si el asiento incluye datos de stock
         mov_stk = asiento.get("Mov_Stock", "Ninguno")
         art_stk = asiento.get("Art_Stock")
         cant_stk = asiento.get("Cant_Stock", 0)
@@ -340,7 +335,6 @@ def recalcular_submayores():
             hist_sf = [m for m in nuevos_submayores["Stock_Fisico"] if m["Artículo"] == art_stk]
             stock_f_prev = hist_sf[-1]["Stock Final"] if hist_sf else 0
             
-            # Ajuste para devoluciones en stock físico
             if mov_stk == "Entrada (Compra)":
                 e_sf, s_sf = cant_stk, 0
             elif mov_stk == "Salida (Venta)":
@@ -1042,7 +1036,6 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
     fecha = col_op1.date_input("Fecha de operación", key=f"f_fecha_{form_suffix}")
     tipo_asiento = col_op2.selectbox("Naturaleza del Asiento", ["Normal (Operativo)", "Ajuste de Auditoría"], key=f"f_tipo_as_{form_suffix}")
     
-    # SE AGREGARON LAS OPCIONES DE DEVOLUCIONES
     tipo_operacion = col_op3.selectbox("Tipo de Operación", [
         "Compra", "Venta", "Devolución de Venta", "Devolución de Compra", 
         "Cobro", "Pago", "Ajuste Contable", "Otra Operación"
@@ -1056,7 +1049,6 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
 
     col_v1, col_v2 = st.columns(2)
 
-    # LÓGICA DE ASIGNACIÓN DE TERCERO AMPLIADA PARA INCLUIR AJUSTES Y DEVOLUCIONES
     if tipo_operacion in ["Venta", "Cobro", "Devolución de Venta"]:
         if lista_clientes:
             tercero_operacion = col_v1.selectbox("Seleccionar Cliente", ["Sin especificar"] + lista_clientes, key=f"sel_cli_{tipo_operacion}_{form_suffix}")
@@ -1090,7 +1082,6 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                 estado_vencimiento = "Pagado"
 
     elif tipo_operacion in ["Ajuste Contable", "Otra Operación"]:
-        # Permite opcionalmente seleccionar cliente o proveedor para imputar asientos de ajuste correctamente en submayores
         opcion_afectada = col_v1.selectbox("¿A qué tercero/submayor afecta el ajuste?", ["Ninguno / Cuenta General", "Cliente", "Proveedor"], key=f"sel_afect_{form_suffix}")
         if opcion_afectada == "Cliente":
             if lista_clientes:
@@ -1151,7 +1142,6 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
         st.subheader("📦 Control de Inventario (Opcional)")
         col_st1, col_st2, col_st3, col_st4 = st.columns(4)
         
-        # OPCIONES DE MOVIMIENTO DE STOCK AMPLIADAS
         mov_stock = col_st1.selectbox("Movimiento de Stock", [
             "Ninguno", 
             "Entrada (Compra)", 
@@ -1207,7 +1197,6 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                 
                 st.session_state.libro_diario.append(asiento_obj)
 
-                # RECALCULAR SUBMAYORES INTEGRALMENTE PARA ACTUALIZAR CLIENTES/PROVEEDORES Y STOCK
                 recalcular_submayores()
 
                 guardar_estado_db(usr_act)
