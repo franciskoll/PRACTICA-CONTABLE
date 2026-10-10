@@ -241,7 +241,7 @@ def recalcular_submayores():
                 estado = "Pendiente" if es_pendiente else "Cobrado"
                 nuevos_submayores["Clientes"].append({
                     "Fecha": fecha,
-                    "Fecha_Vencimiento": fecha_venc if fecha_venc !== None else fecha,
+                    "Fecha_Vencimiento": fecha_venc if fecha_venc is not None else fecha,
                     "Cliente": tercero,
                     "Concepto": f"Venta - {concepto}",
                     "Debe (Venta/Cargo)": monto_total,
