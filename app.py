@@ -1068,7 +1068,7 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
     lista_proveedores = [
         t["Nombre"] 
         for t in st.session_state.get("padron_terceros", []) 
-        if t.get("Tipo"] == "Proveedor"
+        if t.get["Tipo"] == "Proveedor"
     ]
     
     lista_articulos = [
