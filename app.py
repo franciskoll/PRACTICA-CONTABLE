@@ -300,7 +300,7 @@ def recalcular_submayores():
                     "Haber (Compra/Deuda)": 0.0,
                     "Estado": "Anulación / Nota de Crédito"
                 })
-            elif tipo_op in ["Ajuste Contable", "Otra Operación"]:
+            elif tipo_op in ["Ajuste Contable", "Reclasificación de Pago", "Otra Operación"]:
                 if any("cliente" in r["Cuenta"].lower() or "deudores" in r["Cuenta"].lower() for r in asiento["Renglones"]):
                     d_aj = sum([r["Monto"] for r in asiento["Renglones"] if r["Tipo"] == "Debe" and ("cliente" in r["Cuenta"].lower() or "deudores" in r["Cuenta"].lower())])
                     h_aj = sum([r["Monto"] for r in asiento["Renglones"] if r["Tipo"] == "Haber" and ("cliente" in r["Cuenta"].lower() or "deudores" in r["Cuenta"].lower())])
@@ -313,7 +313,7 @@ def recalcular_submayores():
                         "Haber (Cobro/Pago)": h_aj,
                         "Estado": "Ajustado"
                     })
-                elif any("proveedor" in r["Cuenta"].lower() or "obligaciones" in r["Cuenta"].lower() for r in asiento["Renglones"]):
+                if any("proveedor" in r["Cuenta"].lower() or "obligaciones" in r["Cuenta"].lower() for r in asiento["Renglones"]):
                     d_aj = sum([r["Monto"] for r in asiento["Renglones"] if r["Tipo"] == "Debe" and ("proveedor" in r["Cuenta"].lower() or "obligaciones" in r["Cuenta"].lower())])
                     h_aj = sum([r["Monto"] for r in asiento["Renglones"] if r["Tipo"] == "Haber" and ("proveedor" in r["Cuenta"].lower() or "obligaciones" in r["Cuenta"].lower())])
                     nuevos_submayores["Proveedores"].append({
@@ -325,6 +325,39 @@ def recalcular_submayores():
                         "Haber (Compra/Deuda)": h_aj,
                         "Estado": "Ajustado"
                     })
+
+        # Capturar por si hay múltiples terceros afectados en el mismo asiento (ej. reclasificación cruzada)
+        terceros_extra = asiento.get("Terceros_Afectados", [])
+        for t_ext in terceros_extra:
+            t_nombre = t_ext.get("Tercero")
+            t_tipo = t_ext.get("Tipo_Entidad") # "Cliente" o "Proveedor"
+            monto_t = t_ext.get("Monto", 0.0)
+            tipo_mov = t_ext.get("Movimiento", "") # "Debe" o "Haber"
+
+            if t_tipo == "Cliente" and t_nombre:
+                d_val = monto_t if tipo_mov == "Debe" else 0.0
+                h_val = monto_t if tipo_mov == "Haber" else 0.0
+                nuevos_submayores["Clientes"].append({
+                    "Fecha": fecha,
+                    "Fecha_Vencimiento": fecha,
+                    "Cliente": t_nombre,
+                    "Concepto": f"Reclasificación - {concepto}",
+                    "Debe (Venta/Cargo)": d_val,
+                    "Haber (Cobro/Pago)": h_val,
+                    "Estado": "Ajustado"
+                })
+            elif t_tipo == "Proveedor" and t_nombre:
+                d_val = monto_t if tipo_mov == "Debe" else 0.0
+                h_val = monto_t if tipo_mov == "Haber" else 0.0
+                nuevos_submayores["Proveedores"].append({
+                    "Fecha": fecha,
+                    "Fecha_Vencimiento": fecha,
+                    "Proveedor": t_nombre,
+                    "Concepto": f"Reclasificación - {concepto}",
+                    "Debe (Pago)": d_val,
+                    "Haber (Compra/Deuda)": h_val,
+                    "Estado": "Ajustado"
+                })
 
         mov_stk = asiento.get("Mov_Stock", "Ninguno")
         art_stk = asiento.get("Art_Stock")
@@ -1027,8 +1060,8 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
 
     form_suffix = str(st.session_state["asiento_form_id"])
 
-    lista_clientes = [t["Nombre"] for t in st.session_state.get("padron_terceros", []) if t.get("Tipo") == "Cliente"]
-    lista_proveedores = [t["Nombre"] for t in st.session_state.get("padron_terceros", []) if t.get("Tipo") == "Proveedor"]
+    lista_clientes = [t["Nombre"] for t in st.session_state.get("padron_terceros", []) if t.get("Tipo"] == "Cliente"]
+    lista_proveedores = [t["Nombre"] for t in st.session_state.get("padron_terceros", []) if t.get("Tipo"] == "Proveedor"]
     lista_articulos = [a["Nombre"] for a in st.session_state.get("padron_articulos", [])]
 
     st.subheader("📄 Datos del Comprobante y Operación")
@@ -1038,14 +1071,15 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
     
     tipo_operacion = col_op3.selectbox("Tipo de Operación", [
         "Compra", "Venta", "Devolución de Venta", "Devolución de Compra", 
-        "Cobro", "Pago", "Ajuste Contable", "Otra Operación"
+        "Cobro", "Pago", "Reclasificación de Pago", "Ajuste Contable", "Otra Operación"
     ], key=f"f_tipo_op_{form_suffix}")
     
-    concepto = col_op4.text_input("Comprobante / Detalle", placeholder="Ej: Nota de Crédito N° 0001 / Ajuste de Pago", key=f"f_concepto_{form_suffix}")
+    concepto = col_op4.text_input("Comprobante / Detalle", placeholder="Ej: Reclasificación de pago mal imputado", key=f"f_concepto_{form_suffix}")
 
     tercero_operacion = "N/A"
     fecha_vencimiento = None
     estado_vencimiento = "Cobrado/Pagado"
+    terceros_afectados_asiento = []
 
     col_v1, col_v2 = st.columns(2)
 
@@ -1080,6 +1114,24 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
             else:
                 fecha_vencimiento = fecha
                 estado_vencimiento = "Pagado"
+
+    elif tipo_operacion == "Reclasificación de Pago":
+        st.info("🔄 **Reclasificación Cruzada:** Permite corregir un pago imputado erróneamente a un tercero (Cliente o Proveedor) asignándolo al tercero correcto.")
+        col_rc1, col_rc2 = st.columns(2)
+        
+        tipo_ent_erronea = col_rc1.selectbox("Tipo Entidad Mal Imputada (A corregir)", ["Cliente", "Proveedor"], key=f"tipo_err_{form_suffix}")
+        if tipo_ent_erronea == "Cliente":
+            ent_erronea = col_rc1.selectbox("Seleccionar Cliente Erróneo", lista_clientes if lista_clientes else ["Ninguno"], key=f"ent_err_c_{form_suffix}")
+        else:
+            ent_erronea = col_rc1.selectbox("Seleccionar Proveedor Erróneo", lista_proveedores if lista_proveedores else ["Ninguno"], key=f"ent_err_p_{form_suffix}")
+
+        tipo_ent_correcta = col_rc2.selectbox("Tipo Entidad Correcta", ["Cliente", "Proveedor"], key=f"tipo_corr_{form_suffix}")
+        if tipo_ent_correcta == "Cliente":
+            ent_correcta = col_rc2.selectbox("Seleccionar Cliente Correcto", lista_clientes if lista_clientes else ["Ninguno"], key=f"ent_corr_c_{form_suffix}")
+        else:
+            ent_correcta = col_rc2.selectbox("Seleccionar Proveedor Correcto", lista_proveedores if lista_proveedores else ["Ninguno"], key=f"ent_corr_p_{form_suffix}")
+
+        tercero_operacion = f"Recl. {ent_erronea} ➔ {ent_correcta}"
 
     elif tipo_operacion in ["Ajuste Contable", "Otra Operación"]:
         opcion_afectada = col_v1.selectbox("¿A qué tercero/submayor afecta el ajuste?", ["Ninguno / Cuenta General", "Cliente", "Proveedor"], key=f"sel_afect_{form_suffix}")
@@ -1180,6 +1232,15 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                 for r in filas_haber:
                     renglones_asiento.append({"Tipo": "Haber", "Cuenta": r["Cuenta"], "Monto": float(r["Monto"])})
 
+                # Si es reclasificación, mapeamos ambos terceros en el asiento para que el submayor impacte en los dos
+                if tipo_operacion == "Reclasificación de Pago":
+                    # Identificamos montos y sentidos para cada submayor
+                    monto_reclasif = total_debe # o total_haber
+                    terceros_afectados_asiento = [
+                        {"Tercero": ent_erronea, "Tipo_Entidad": tipo_ent_erronea, "Monto": monto_reclasif, "Movimiento": "Haber" if tipo_ent_erronea=="Cliente" else "Debe"},
+                        {"Tercero": ent_correcta, "Tipo_Entidad": tipo_ent_correcta, "Monto": monto_reclasif, "Movimiento": "Debe" if tipo_ent_correcta=="Cliente" else "Haber"}
+                    ]
+
                 asiento_obj = {
                     "Asiento": num_asiento,
                     "Fecha": fecha,
@@ -1188,6 +1249,7 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                     "Operación": tipo_operacion,
                     "Concepto": concepto,
                     "Tercero": tercero_operacion,
+                    "Terceros_Afectados": terceros_afectados_asiento,
                     "Renglones": renglones_asiento,
                     "Mov_Stock": mov_stock,
                     "Art_Stock": art_stock,
@@ -1202,7 +1264,7 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                 guardar_estado_db(usr_act)
                 registrar_log(usr_act, "NUEVO_ASIENTO", f"Asiento N° {num_asiento} registrado por total ${total_debe:,.2f}")
                 st.session_state["asiento_form_id"] += 1
-                st.success(f"Asiento N° {num_asiento} registrado con éxito y submayores sincronizados.")
+                st.success(f"Asiento N° {num_asiento} registrado con éxito y submayores sincronizados en ambas cuentas.")
                 st.rerun()
 
     col_tit, col_btn = st.columns([3, 1])
