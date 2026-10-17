@@ -1059,10 +1059,22 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
 
     form_suffix = str(st.session_state["asiento_form_id"])
 
-    lista_clientes = [t["Nombre"] for t in st.session_state.get("padron_terceros", []) if t.get("Tipo") == "Cliente"]
-    lista_proveedores = [t["Nombre"] for t in st.session_state.get("padron_terceros", []) if t.get("Tipo"] == "Proveedor"]
-    lista_articulos = [a["Nombre"] for a in st.session_state.get("padron_articulos", [])]
-
+lista_clientes = [
+        t["Nombre"] 
+        for t in st.session_state.get("padron_terceros", []) 
+        if t.get("Tipo") == "Cliente"
+    ]
+    
+    lista_proveedores = [
+        t["Nombre"] 
+        for t in st.session_state.get("padron_terceros", []) 
+        if t.get("Tipo"] == "Proveedor"
+    ]
+    
+    lista_articulos = [
+        a["Nombre"] 
+        for a in st.session_state.get("padron_articulos", [])
+    ]
     st.subheader("📄 Datos del Comprobante y Operación")
     col_op1, col_op2, col_op3, col_op4 = st.columns([1.5, 2, 2, 2.5])
     fecha = col_op1.date_input("Fecha de operación", key=f"f_fecha_{form_suffix}")
