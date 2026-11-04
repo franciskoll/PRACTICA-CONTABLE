@@ -235,12 +235,19 @@ def recalcular_submayores():
         monto_haber = sum([r["Monto"] for r in asiento["Renglones"] if r["Tipo"] == "Haber"])
         monto_total = max(monto_debe, monto_haber)
         
-        if tercero not in ["N/A", "Sin especificar"]:
+if tercero not in ["N/A", "Sin especificar"]:
             if tipo_op == "Venta":
-                es_pendiente = (fecha_venc != fecha and fecha_venc is not None)
+                # Detectamos si la venta dejó saldo en cuenta corriente (Clientes / Deudores)
+                monto_ctactte_cli = sum([r["Monto"] for r in asiento["Renglones"] if "cliente" in r["Cuenta"].lower() or "deudores" in r["Cuenta"].lower()])
+                monto_cobrado_contado = monto_total - monto_ctactte_cli
+                
+                es_pendiente = monto_ctactte_cli > 0 or (fecha_venc != fecha and fecha_venc is not None)
                 estado = "Pendiente" if es_pendiente else "Cobrado"
+                
+                # El Debe registra la venta total, y el Haber (Cobro) registra solo lo cobrado al contado
                 debe_val = monto_total
-                haber_val = 0.0 if es_pendiente else monto_total
+                haber_val = monto_cobrado_contado if not es_pendiente else 0.0
+                
                 nuevos_submayores["Clientes"].append({
                     "Fecha": fecha,
                     "Fecha_Vencimiento": fecha_venc if fecha_venc is not None else fecha,
@@ -248,7 +255,7 @@ def recalcular_submayores():
                     "Concepto": f"Venta - {concepto}",
                     "Debe (Venta/Cargo)": debe_val,
                     "Haber (Cobro/Pago)": haber_val,
-                    "Estado": estado
+                    "Estado": "Pendiente" if monto_ctactte_cli > 0 else estado
                 })
             elif tipo_op == "Cobro":
                 nuevos_submayores["Clientes"].append({
@@ -270,11 +277,18 @@ def recalcular_submayores():
                     "Haber (Cobro/Pago)": monto_total,
                     "Estado": "Anulación / Nota de Crédito"
                 })
-            elif tipo_op == "Compra":
-                es_pendiente = (fecha_venc != fecha and fecha_venc is not None)
+elif tipo_op == "Compra":
+                # Detectamos si la compra dejó saldo en cuenta corriente (Proveedores u Obligaciones a Pagar)
+                monto_ctactte = sum([r["Monto"] for r in asiento["Renglones"] if "proveedor" in r["Cuenta"].lower() or "obligaciones" in r["Cuenta"].lower()])
+                monto_pagado_contado = monto_total - monto_ctactte
+                
+                es_pendiente = monto_ctactte > 0 or (fecha_venc != fecha and fecha_venc is not None)
                 estado = "Pendiente" if es_pendiente else "Pagado"
-                debe_val = 0.0 if es_pendiente else monto_total
+                
+                # El Haber registra la deuda total de la compra, y el Debe (Pago) registra solo lo abonado al contado
                 haber_val = monto_total
+                debe_val = monto_pagado_contado if not es_pendiente else 0.0
+                
                 nuevos_submayores["Proveedores"].append({
                     "Fecha": fecha,
                     "Fecha_Vencimiento": fecha_venc if fecha_venc is not None else fecha,
@@ -282,7 +296,8 @@ def recalcular_submayores():
                     "Concepto": f"Compra - {concepto}",
                     "Debe (Pago)": debe_val,
                     "Haber (Compra/Deuda)": haber_val,
-                    "Estado": estado
+                    "Estado": "Pendiente" if monto_ctactte > 0 else estado
+                })
                 })
             elif tipo_op == "Pago":
                 nuevos_submayores["Proveedores"].append({
