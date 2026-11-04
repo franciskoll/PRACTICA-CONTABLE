@@ -212,11 +212,11 @@ def obtener_logs_auditoria():
     return res.data
 
 # ==========================================
-# RECONSTRUCCIÓN DE SUBMAYORES TRAS ELIMINACIÓN O AJUSTE
+# RECONSTRUCCIÓN DE SUBMAYORES Y ORDENAMIENTO
 # ==========================================
 
 def recalcular_submayores():
-    """Recalcula íntegramente los submayores a partir del Libro Diario vigente."""
+    """Recalcula íntegramente los submayores a partir del Libro Diario vigente ordenado cronológicamente."""
     nuevos_submayores = {
         "Clientes": [],
         "Proveedores": [],
@@ -224,7 +224,10 @@ def recalcular_submayores():
         "Stock_Valorizado": {}
     }
     
-    for asiento in st.session_state.libro_diario:
+    # Aseguramos el orden cronológico estricto por Fecha antes de calcular
+    diario_ordenado = sorted(st.session_state.libro_diario, key=lambda x: (x.get("Fecha"), x.get("Asiento", 0)))
+
+    for asiento in diario_ordenado:
         tercero = asiento.get("Tercero", "N/A")
         tipo_op = asiento.get("Operación", "")
         fecha = asiento.get("Fecha")
@@ -435,6 +438,14 @@ def recalcular_submayores():
 
     st.session_state.submayores = nuevos_submayores
 
+def reordenar_y_renumerar_asientos():
+    """Ordena cronológicamente los asientos por fecha y asigna números de asiento correlativos."""
+    if st.session_state.get("libro_diario"):
+        st.session_state.libro_diario = sorted(st.session_state.libro_diario, key=lambda x: x.get("Fecha"))
+        for idx, asiento in enumerate(st.session_state.libro_diario):
+            asiento["Asiento"] = idx + 1
+        recalcular_submayores()
+
 # ==========================================
 # 2. CONTROL DE ACCESO Y SESIÓN
 # ==========================================
@@ -473,6 +484,7 @@ if not st.session_state["autenticado"]:
                         st.session_state.padron_articulos = estado.get("padron_articulos", [])
                         st.session_state.libro_diario = estado.get("libro_diario", [])
                         st.session_state.submayores = estado.get("submayores", {})
+                        recalcular_submayores()
                 else:
                     st.session_state.alumno_nombre = "Profesor / Administrador"
                     st.session_state.alumno_curso = "Docente Maestro"
@@ -570,6 +582,7 @@ if usr_act == "admin":
                 st.session_state.padron_articulos = estado_sup.get("padron_articulos", [])
                 st.session_state.libro_diario = estado_sup.get("libro_diario", [])
                 st.session_state.submayores = estado_sup.get("submayores", {})
+                recalcular_submayores()
             else:
                 st.session_state.alumno_nombre = "Sin Datos"
                 st.session_state.alumno_curso = ""
@@ -1291,17 +1304,24 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
                 st.success(f"Asiento N° {num_asiento} registrado con éxito y submayores sincronizados en ambas cuentas.")
                 st.rerun()
 
-    col_tit, col_btn = st.columns([3, 1])
+    col_tit, col_btn, col_reord = st.columns([2.5, 1.2, 1.3])
     col_tit.subheader("📖 Libro Diario General")
     
     if st.session_state.get("libro_diario"):
         pdf_diario = generar_pdf_libro_diario(st.session_state.libro_diario)
         col_btn.download_button(
-            label="📄 Exportar Libro Diario (PDF)",
+            label="📄 Exportar Diario (PDF)",
             data=pdf_diario,
             file_name=f"Libro_Diario_{st.session_state.get('alumno_nombre', 'Alumno').replace(' ', '_')}.pdf",
             mime="application/pdf"
         )
+
+        if col_reord.button("🔢 Reordenar y Numerar", help="Ordena cronológicamente los asientos por fecha y asigna números correlativos"):
+            reordenar_y_renumerar_asientos()
+            guardar_estado_db(usr_act)
+            registrar_log(usr_act, "REORDENAR_ASIENTOS", "Asientos reordenados cronológicamente")
+            st.success("¡Asientos reordenados y numerados correctamente!")
+            st.rerun()
 
         for idx, asito in enumerate(st.session_state.libro_diario):
             with st.container():
@@ -1348,6 +1368,13 @@ elif menu == "2. Carga de Asientos (Libro Diario)":
 
 elif menu == "3. Libro Mayor y Submayores":
     st.header("📊 Libro Mayor General y Submayores Auxiliares")
+
+    col_m_head, col_m_btn = st.columns([3, 1])
+    if col_m_btn.button("🔄 Recalcular Todo", help="Fuerza un recálculo ordenado de todos los submayores"):
+        recalcular_submayores()
+        guardar_estado_db(usr_act)
+        st.success("Submayores recalculados con éxito.")
+        st.rerun()
 
     tab_mayor, tab_sub_c, tab_sub_p, tab_sub_stk = st.tabs([
         "Libro Mayor General", "Submayor Clientes", "Submayor Proveedores", "Stock Físico (Unidades)"
@@ -1467,6 +1494,13 @@ elif menu == "3. Libro Mayor y Submayores":
 
 elif menu == "4. Ficha de Stock PPP":
     st.header("📈 Ficha de Stock Valorizada - Método PPP")
+
+    col_s_head, col_s_btn = st.columns([3, 1])
+    if col_s_btn.button("🔄 Recalcular Stock", help="Recalcula las fichas de stock ordenando los asientos por fecha"):
+        recalcular_submayores()
+        guardar_estado_db(usr_act)
+        st.success("Fichas de stock recalculadas correctamente.")
+        st.rerun()
 
     fichas = st.session_state.get("submayores", {}).get("Stock_Valorizado", {})
 
