@@ -298,7 +298,6 @@ elif tipo_op == "Compra":
                     "Haber (Compra/Deuda)": haber_val,
                     "Estado": "Pendiente" if monto_ctactte > 0 else estado
                 })
-                })
             elif tipo_op == "Pago":
                 nuevos_submayores["Proveedores"].append({
                     "Fecha": fecha,
