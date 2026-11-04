@@ -235,16 +235,14 @@ def recalcular_submayores():
         monto_haber = sum([r["Monto"] for r in asiento["Renglones"] if r["Tipo"] == "Haber"])
         monto_total = max(monto_debe, monto_haber)
         
-if tercero not in ["N/A", "Sin especificar"]:
+        if tercero not in ["N/A", "Sin especificar"]:
             if tipo_op == "Venta":
-                # Detectamos si la venta dejó saldo en cuenta corriente (Clientes / Deudores)
                 monto_ctactte_cli = sum([r["Monto"] for r in asiento["Renglones"] if "cliente" in r["Cuenta"].lower() or "deudores" in r["Cuenta"].lower()])
                 monto_cobrado_contado = max(0.0, monto_total - monto_ctactte_cli)
                 
                 es_pendiente = monto_ctactte_cli > 0 or (fecha_venc != fecha and fecha_venc is not None)
                 estado = "Pendiente" if es_pendiente else "Cobrado"
                 
-                # El Debe registra la venta total, y el Haber (Cobro) registra solo lo cobrado al contado
                 debe_val = monto_total
                 haber_val = monto_cobrado_contado if not es_pendiente else 0.0
                 
@@ -277,15 +275,13 @@ if tercero not in ["N/A", "Sin especificar"]:
                     "Haber (Cobro/Pago)": monto_total,
                     "Estado": "Anulación / Nota de Crédito"
                 })
-elif tipo_op == "Compra":
-                # Detectamos si la compra dejó saldo en cuenta corriente (Proveedores u Obligaciones a Pagar)
+            elif tipo_op == "Compra":
                 monto_ctactte = sum([r["Monto"] for r in asiento["Renglones"] if "proveedor" in r["Cuenta"].lower() or "obligaciones" in r["Cuenta"].lower()])
-                monto_pagado_contado = monto_total - monto_ctactte
+                monto_pagado_contado = max(0.0, monto_total - monto_ctactte)
                 
                 es_pendiente = monto_ctactte > 0 or (fecha_venc != fecha and fecha_venc is not None)
                 estado = "Pendiente" if es_pendiente else "Pagado"
                 
-                # El Haber registra la deuda total de la compra, y el Debe (Pago) registra solo lo abonado al contado
                 haber_val = monto_total
                 debe_val = monto_pagado_contado if not es_pendiente else 0.0
                 
