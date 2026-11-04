@@ -239,7 +239,7 @@ if tercero not in ["N/A", "Sin especificar"]:
             if tipo_op == "Venta":
                 # Detectamos si la venta dejó saldo en cuenta corriente (Clientes / Deudores)
                 monto_ctactte_cli = sum([r["Monto"] for r in asiento["Renglones"] if "cliente" in r["Cuenta"].lower() or "deudores" in r["Cuenta"].lower()])
-                monto_cobrado_contado = monto_total - monto_ctactte_cli
+                monto_cobrado_contado = max(0.0, monto_total - monto_ctactte_cli)
                 
                 es_pendiente = monto_ctactte_cli > 0 or (fecha_venc != fecha and fecha_venc is not None)
                 estado = "Pendiente" if es_pendiente else "Cobrado"
