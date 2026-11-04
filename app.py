@@ -244,7 +244,7 @@ def recalcular_submayores():
                 estado = "Pendiente" if es_pendiente else "Cobrado"
                 
                 debe_val = monto_total
-                haber_val = monto_cobrado_contado if not es_pendiente else 0.0
+                haber_val = monto_cobrado_contado
                 
                 nuevos_submayores["Clientes"].append({
                     "Fecha": fecha,
@@ -253,7 +253,7 @@ def recalcular_submayores():
                     "Concepto": f"Venta - {concepto}",
                     "Debe (Venta/Cargo)": debe_val,
                     "Haber (Cobro/Pago)": haber_val,
-                    "Estado": "Pendiente" if monto_ctactte_cli > 0 else estado
+                    "Estado": estado
                 })
             elif tipo_op == "Cobro":
                 nuevos_submayores["Clientes"].append({
@@ -283,7 +283,7 @@ def recalcular_submayores():
                 estado = "Pendiente" if es_pendiente else "Pagado"
                 
                 haber_val = monto_total
-                debe_val = monto_pagado_contado if not es_pendiente else 0.0
+                debe_val = monto_pagado_contado
                 
                 nuevos_submayores["Proveedores"].append({
                     "Fecha": fecha,
@@ -292,7 +292,7 @@ def recalcular_submayores():
                     "Concepto": f"Compra - {concepto}",
                     "Debe (Pago)": debe_val,
                     "Haber (Compra/Deuda)": haber_val,
-                    "Estado": "Pendiente" if monto_ctactte > 0 else estado
+                    "Estado": estado
                 })
             elif tipo_op == "Pago":
                 nuevos_submayores["Proveedores"].append({
